@@ -4,6 +4,7 @@
 mod config;
 mod gateway;
 mod routing;
+mod status;
 mod updater;
 
 fn main() {
