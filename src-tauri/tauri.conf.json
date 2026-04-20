@@ -39,6 +39,7 @@
       "providerShortName": null
     },
     "windows": {
+      "requestedExecutionLevel": "requireAdministrator",
       "nsis": {},
       "wix": {}
     }
