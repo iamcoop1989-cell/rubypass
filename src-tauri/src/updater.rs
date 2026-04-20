@@ -10,6 +10,7 @@ pub fn subnet_file() -> PathBuf {
 
 /// Parse count of IPs → CIDR prefix length. 256 → 24, 512 → 23, etc.
 pub fn count_to_prefix(count: u32) -> u8 {
+    if count == 0 { return 32; }
     let mut bits = 32u8;
     let mut n = count;
     while n > 1 {
@@ -47,9 +48,9 @@ pub fn download_and_save() -> Result<usize, String> {
     }
     let path = subnet_file();
     std::fs::create_dir_all(path.parent().unwrap())
-        .map_err(|e| e.to_string())?;
+        .map_err(|e| format!("Ошибка создания директории: {}", e))?;
     std::fs::write(&path, subnets.join("\n"))
-        .map_err(|e| e.to_string())?;
+        .map_err(|e| format!("Ошибка записи файла: {}", e))?;
     Ok(count)
 }
 
