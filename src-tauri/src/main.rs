@@ -3,6 +3,7 @@
 
 mod config;
 mod gateway;
+mod routing;
 mod updater;
 
 fn main() {
