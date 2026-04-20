@@ -18,24 +18,27 @@ pub fn get_config(state: State<AppState>) -> crate::config::Config {
 
 #[tauri::command]
 pub fn toggle_bypass(app: AppHandle, state: State<AppState>) -> Result<(), String> {
-    let mut cfg = state.0.lock().unwrap();
-    if cfg.bypass_enabled {
-        disable_bypass_inner(&app, &mut cfg)
+    let enabled = state.0.lock().unwrap().bypass_enabled;
+    if enabled {
+        disable_bypass_inner(&app, &state)
     } else {
-        enable_bypass_inner(&app, &mut cfg)
+        enable_bypass_inner(&app, &state)
     }
 }
 
 #[tauri::command]
 pub fn update_subnets(app: AppHandle, state: State<AppState>) -> Result<usize, String> {
     let count = updater::download_and_save()?;
-    let mut cfg = state.0.lock().unwrap();
-    let now = chrono::Utc::now().format("%Y-%m-%dT%H:%M:%SZ").to_string();
-    cfg.last_updated = Some(now);
-    config::save(&cfg)?;
-    if cfg.bypass_enabled {
-        disable_bypass_inner(&app, &mut cfg)?;
-        enable_bypass_inner(&app, &mut cfg)?;
+    {
+        let mut cfg = state.0.lock().unwrap();
+        let now = chrono::Utc::now().format("%Y-%m-%dT%H:%M:%SZ").to_string();
+        cfg.last_updated = Some(now);
+        config::save(&cfg)?;
+    }
+    let was_enabled = state.0.lock().unwrap().bypass_enabled;
+    if was_enabled {
+        disable_bypass_inner(&app, &state)?;
+        enable_bypass_inner(&app, &state)?;
     }
     Ok(count)
 }
@@ -70,40 +73,57 @@ pub fn set_update_schedule(
 
 pub fn enable_bypass_inner(
     app: &AppHandle,
-    cfg: &mut crate::config::Config,
+    state: &State<AppState>,
 ) -> Result<(), String> {
     set_tray_icon(app, TrayState::Loading);
-    let subnets = updater::load_subnets()?;
-    let gateway = cfg
-        .gateway_override
-        .clone()
-        .unwrap_or_else(|| crate::gateway::detect().unwrap_or_default());
+
+    // Clone what we need, then drop the lock before the slow part
+    let (subnets, gateway) = {
+        let cfg = state.0.lock().unwrap();
+        let gw = cfg.gateway_override.clone()
+            .unwrap_or_else(|| crate::gateway::detect().unwrap_or_default());
+        let subnets = updater::load_subnets()?;
+        (subnets, gw)
+    };
+
     if gateway.is_empty() {
         set_tray_icon(app, TrayState::Inactive);
-        return Err(
-            "Не удалось определить шлюз. Проверьте подключение к роутеру.".to_string(),
-        );
+        return Err("Не удалось определить шлюз. Проверьте подключение к роутеру.".to_string());
     }
-    routing::add_routes(&subnets, &gateway);
+
+    // Lock is released here — route operations run without holding it
+    let added = routing::add_routes(&subnets, &gateway);
+    if added == 0 && !subnets.is_empty() {
+        log::warn!("add_routes returned 0 successes for {} subnets", subnets.len());
+    }
+
+    // Re-lock to update state
+    let mut cfg = state.0.lock().unwrap();
     cfg.bypass_enabled = true;
-    config::save(cfg)?;
+    config::save(&cfg)?;
     set_tray_icon(app, TrayState::Active);
     Ok(())
 }
 
 pub fn disable_bypass_inner(
     app: &AppHandle,
-    cfg: &mut crate::config::Config,
+    state: &State<AppState>,
 ) -> Result<(), String> {
     set_tray_icon(app, TrayState::Loading);
-    let subnets = updater::load_subnets().unwrap_or_default();
-    let gateway = cfg
-        .gateway_override
-        .clone()
-        .unwrap_or_else(|| crate::gateway::detect().unwrap_or_default());
+
+    let (subnets, gateway) = {
+        let cfg = state.0.lock().unwrap();
+        let gw = cfg.gateway_override.clone()
+            .unwrap_or_else(|| crate::gateway::detect().unwrap_or_default());
+        let subnets = updater::load_subnets().unwrap_or_default();
+        (subnets, gw)
+    };
+
     routing::remove_routes(&subnets, &gateway);
+
+    let mut cfg = state.0.lock().unwrap();
     cfg.bypass_enabled = false;
-    config::save(cfg)?;
+    config::save(&cfg)?;
     set_tray_icon(app, TrayState::Inactive);
     Ok(())
 }

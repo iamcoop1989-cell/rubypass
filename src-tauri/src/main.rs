@@ -18,6 +18,7 @@ use tauri::{
 };
 
 fn main() {
+    env_logger::init();
     let cfg = config::load();
 
     tauri::Builder::default()
@@ -95,32 +96,32 @@ fn setup_tray(app: &mut tauri::App) -> tauri::Result<()> {
 
 fn setup_first_launch(app: &mut tauri::App) {
     let is_first = !updater::subnet_file().exists();
+    let handle = app.handle().clone();
+
     if is_first {
         if let Some(win) = app.get_webview_window("main") {
             let _ = win.show();
         }
-        let handle = app.handle().clone();
         std::thread::spawn(move || {
-            let state = handle.state::<AppState>();
             if let Ok(count) = updater::download_and_save() {
-                let mut cfg = state.0.lock().unwrap();
-                cfg.last_updated = Some(
-                    chrono::Utc::now()
-                        .format("%Y-%m-%dT%H:%M:%SZ")
-                        .to_string(),
-                );
-                let _ = config::save(&cfg);
+                let state = handle.state::<commands::AppState>();
+                {
+                    let mut cfg = state.0.lock().unwrap();
+                    cfg.last_updated = Some(
+                        chrono::Utc::now().format("%Y-%m-%dT%H:%M:%SZ").to_string()
+                    );
+                    let _ = config::save(&cfg);
+                }
                 log::info!("Downloaded {} subnets, enabling bypass", count);
-                let _ = commands::enable_bypass_inner(&handle, &mut cfg);
+                let _ = commands::enable_bypass_inner(&handle, &state);
             }
         });
     } else {
-        let handle = app.handle().clone();
         std::thread::spawn(move || {
-            let state = handle.state::<AppState>();
-            let mut cfg = state.0.lock().unwrap();
-            if cfg.bypass_enabled {
-                let _ = commands::enable_bypass_inner(&handle, &mut cfg);
+            let state = handle.state::<commands::AppState>();
+            let enabled = state.0.lock().unwrap().bypass_enabled;
+            if enabled {
+                let _ = commands::enable_bypass_inner(&handle, &state);
             }
         });
     }
