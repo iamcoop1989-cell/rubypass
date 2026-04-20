@@ -7,7 +7,72 @@
   <link rel="stylesheet" href="style.css">
 </head>
 <body>
-  <div id="app">Loading…</div>
-  <script src="main.js"></script>
+
+<div class="header">
+  <div class="header-left">
+    <span class="icon" id="header-icon">🔒</span>
+    <h1>RuBypass</h1>
+  </div>
+</div>
+
+<div class="status-section">
+  <div>
+    <div class="status-label inactive" id="status-label">Выключен</div>
+    <div class="status-sub" id="status-sub">Весь трафик через VPN</div>
+  </div>
+  <button class="toggle" id="toggle-btn" onclick="toggleBypass()"></button>
+</div>
+
+<div class="stats">
+  <div class="stats-label">Статус</div>
+  <div class="stats-grid">
+    <div class="stat-cell">
+      <div class="label">Подсети</div>
+      <div class="value" id="stat-subnets">—</div>
+    </div>
+    <div class="stat-cell">
+      <div class="label">Маршруты</div>
+      <div class="value" id="stat-routes">—</div>
+    </div>
+    <div class="stat-cell">
+      <div class="label">Шлюз <small title="Адрес вашего роутера">ⓘ</small></div>
+      <div class="value" id="stat-gateway" style="font-size:11px">—</div>
+    </div>
+    <div class="stat-cell">
+      <div class="label">VPN</div>
+      <div class="value" id="stat-vpn">—</div>
+    </div>
+  </div>
+</div>
+
+<div class="update-section">
+  <div class="update-row">
+    <div class="update-info">
+      <div class="section-label">Список IP</div>
+      <div class="date" id="last-updated">Не обновлялся</div>
+    </div>
+    <button class="btn-update" id="btn-update" onclick="updateSubnets()">Обновить</button>
+  </div>
+  <div class="schedule-row">
+    <label>Автообновление:</label>
+    <select id="schedule-select" onchange="setSchedule(this.value)">
+      <option value="never">Никогда</option>
+      <option value="daily">Ежедневно</option>
+      <option value="weekly" selected>Еженедельно</option>
+      <option value="monthly">Ежемесячно</option>
+    </select>
+  </div>
+</div>
+
+<div class="settings-section">
+  <div class="setting-row">
+    <span class="setting-label">Автозапуск</span>
+    <button class="toggle-small" id="autostart-btn" onclick="toggleAutostart()"></button>
+  </div>
+</div>
+
+<div class="toast" id="toast"></div>
+
+<script src="main.js"></script>
 </body>
 </html>

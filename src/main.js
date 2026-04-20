@@ -1,0 +1,137 @@
+// src/main.js
+const { invoke } = window.__TAURI__.core;
+const { listen } = window.__TAURI__.event;
+
+let autostartEnabled = false;
+
+async function refresh() {
+  try {
+    const [status, config] = await Promise.all([
+      invoke('get_status'),
+      invoke('get_config'),
+    ]);
+    autostartEnabled = config.autostart;
+    renderStatus(status, config);
+  } catch (e) {
+    showToast('Ошибка получения статуса: ' + e, true);
+  }
+}
+
+function renderStatus(status, config) {
+  const btn = document.getElementById('toggle-btn');
+  btn.className = 'toggle' + (status.bypass_enabled ? ' on' : '');
+
+  const label = document.getElementById('status-label');
+  const sub = document.getElementById('status-sub');
+  if (status.bypass_enabled) {
+    label.textContent = 'Активен';
+    label.className = 'status-label active';
+    sub.textContent = 'RU трафик идёт напрямую';
+    document.getElementById('header-icon').textContent = '🔓';
+  } else {
+    label.textContent = 'Выключен';
+    label.className = 'status-label inactive';
+    sub.textContent = 'Весь трафик через VPN';
+    document.getElementById('header-icon').textContent = '🔒';
+  }
+
+  document.getElementById('stat-subnets').textContent =
+    status.subnet_count ? status.subnet_count.toLocaleString('ru') : '—';
+  document.getElementById('stat-routes').textContent =
+    status.active_routes ? status.active_routes.toLocaleString('ru') : '—';
+  document.getElementById('stat-gateway').textContent =
+    status.gateway || 'не определён';
+
+  const vpnEl = document.getElementById('stat-vpn');
+  if (status.vpn_interface) {
+    vpnEl.textContent = '● ' + status.vpn_interface;
+    vpnEl.className = 'value ok';
+  } else {
+    vpnEl.textContent = 'не обнаружен';
+    vpnEl.className = 'value warn';
+  }
+
+  if (status.last_updated) {
+    const d = new Date(status.last_updated);
+    document.getElementById('last-updated').textContent =
+      'Обновлён: ' + d.toLocaleDateString('ru', {
+        day: 'numeric', month: 'long', year: 'numeric'
+      });
+  } else {
+    document.getElementById('last-updated').textContent = 'Не обновлялся';
+  }
+
+  document.getElementById('schedule-select').value =
+    config.update_schedule || 'weekly';
+
+  const ab = document.getElementById('autostart-btn');
+  ab.className = 'toggle-small' + (config.autostart ? ' on' : '');
+}
+
+async function toggleBypass() {
+  const btn = document.getElementById('toggle-btn');
+  btn.className = 'toggle loading';
+  try {
+    await invoke('toggle_bypass');
+    await refresh();
+  } catch (e) {
+    showToast(String(e), true);
+    await refresh();
+  }
+}
+
+async function updateSubnets() {
+  const btn = document.getElementById('btn-update');
+  btn.disabled = true;
+  btn.textContent = 'Загрузка…';
+  try {
+    const count = await invoke('update_subnets');
+    showToast('Обновлено: ' + count.toLocaleString('ru') + ' подсетей');
+    await refresh();
+  } catch (e) {
+    showToast(String(e), true);
+  } finally {
+    btn.disabled = false;
+    btn.textContent = 'Обновить';
+  }
+}
+
+async function setSchedule(value) {
+  try {
+    await invoke('set_update_schedule', { schedule: value });
+  } catch (e) {
+    showToast(String(e), true);
+  }
+}
+
+async function toggleAutostart() {
+  autostartEnabled = !autostartEnabled;
+  try {
+    await invoke('set_autostart', { enabled: autostartEnabled });
+    const ab = document.getElementById('autostart-btn');
+    ab.className = 'toggle-small' + (autostartEnabled ? ' on' : '');
+  } catch (e) {
+    showToast(String(e), true);
+    autostartEnabled = !autostartEnabled;
+  }
+}
+
+function showToast(msg, isError = false) {
+  const el = document.getElementById('toast');
+  el.textContent = msg;
+  el.className = 'toast show' + (isError ? ' error' : '');
+  clearTimeout(el._timer);
+  el._timer = setTimeout(() => { el.className = 'toast'; }, 3500);
+}
+
+// Listen for network-changed event from backend
+listen('network-changed', () => {
+  showToast('Сеть изменилась, маршруты обновлены');
+  refresh();
+});
+
+// Poll status every 5 seconds
+setInterval(refresh, 5000);
+
+// Initial load
+refresh();
