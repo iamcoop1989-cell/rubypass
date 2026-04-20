@@ -72,7 +72,8 @@ mod tests {
 
     #[allow(deprecated)]
     fn temp_home() -> (tempfile::TempDir, std::sync::MutexGuard<'static, ()>) {
-        let guard = ENV_LOCK.lock().unwrap();
+        // unwrap_or_else recovers from mutex poisoning (panic in another test)
+        let guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let dir = tempfile::tempdir().unwrap();
         env::set_var("HOME", dir.path());
         (dir, guard)
