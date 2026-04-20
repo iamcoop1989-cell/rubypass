@@ -34,9 +34,11 @@ fn detect_macos() -> Result<String, String> {
         .args(["getoption", "en0", "router"])
         .output()
         .map_err(|e| e.to_string())?;
-    let gw = String::from_utf8_lossy(&out.stdout).trim().to_string();
-    if !gw.is_empty() && gw != "0.0.0.0" {
-        return Ok(gw);
+    if out.status.success() {
+        let gw = String::from_utf8_lossy(&out.stdout).trim().to_string();
+        if !gw.is_empty() && gw != "0.0.0.0" {
+            return Ok(gw);
+        }
     }
     // Fallback: parse `route -n get default`
     let out = Command::new("route")
@@ -83,9 +85,11 @@ fn detect_windows() -> Result<String, String> {
         ])
         .output()
         .map_err(|e| e.to_string())?;
-    let gw = String::from_utf8_lossy(&out.stdout).trim().to_string();
-    if !gw.is_empty() {
-        return Ok(gw);
+    if out.status.success() {
+        let gw = String::from_utf8_lossy(&out.stdout).trim().to_string();
+        if !gw.is_empty() {
+            return Ok(gw);
+        }
     }
     Err("Не удалось определить шлюз".to_string())
 }
