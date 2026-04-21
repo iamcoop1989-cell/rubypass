@@ -66,6 +66,20 @@ fn main() {
         .expect("error running RuBypass");
 }
 
+/// Show the main window, reloading its content if the WebView failed to load
+/// (can happen when the app is launched as a LaunchAgent before the system
+/// WebView is fully initialised on macOS).
+fn show_main_window(app: &tauri::AppHandle) {
+    if let Some(win) = app.get_webview_window("main") {
+        let _ = win.show();
+        let _ = win.set_focus();
+        // If Tauri's JS bridge isn't present the page is blank — reload it.
+        let _ = win.eval(
+            "if (!window.__TAURI__) { window.location.reload(); }"
+        );
+    }
+}
+
 fn setup_tray(app: &mut tauri::App) -> tauri::Result<()> {
     let open = MenuItem::with_id(app, "open", "Открыть", true, None::<&str>)?;
     let toggle = MenuItem::with_id(app, "toggle", "Включить", true, None::<&str>)?;
@@ -86,19 +100,12 @@ fn setup_tray(app: &mut tauri::App) -> tauri::Result<()> {
                 ..
             } = event
             {
-                let app = tray.app_handle();
-                if let Some(win) = app.get_webview_window("main") {
-                    let _ = win.show();
-                    let _ = win.set_focus();
-                }
+                show_main_window(tray.app_handle());
             }
         })
         .on_menu_event(|app, event| match event.id.as_ref() {
             "open" => {
-                if let Some(win) = app.get_webview_window("main") {
-                    let _ = win.show();
-                    let _ = win.set_focus();
-                }
+                show_main_window(app);
             }
             "toggle" => {
                 let state = app.state::<AppState>();
