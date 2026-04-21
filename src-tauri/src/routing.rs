@@ -104,28 +104,6 @@ fn run_batched(subnets: &[String], gateway: &str, add: bool) -> usize {
 #[cfg(target_os = "windows")]
 fn run_batched(subnets: &[String], gateway: &str, add: bool) -> usize {
     if !is_safe_ip(gateway) { return 0; }
-    let valid: Vec<&str> = subnets.iter()
-        .filter(|cidr| is_safe_ip(cidr))
-        .map(String::as_str)
-        .collect();
-    let count = valid.len();
-    if count == 0 { return 0; }
-
-    let mut lines: Vec<String> = Vec::with_capacity(count);
-    for cidr in &valid {
-        let Some((net, prefix_str)) = cidr.split_once('/') else { continue; };
-        let Ok(prefix) = prefix_str.parse::<u8>() else { continue; };
-        let mask = prefix_to_mask(prefix);
-        if add {
-            lines.push(format!("route ADD {} MASK {} {}", net, mask, gateway));
-        } else {
-            lines.push(format!("route DELETE {} MASK {} {}", net, mask, gateway));
-        }
-    }
-
-    let script = lines.join("\r\n");
-    let tmp = if add { "C:\\Windows\\Temp\\rubypass_add.bat" } else { "C:\\Windows\\Temp\\rubypass_del.bat" };
-    if std::fs::write(tmp, &script).is_err() { return 0; }
 
     // If another routing operation is already running, drop this one rather than queue.
     let _lock = match ROUTING_LOCK.try_lock() {
@@ -136,18 +114,38 @@ fn run_batched(subnets: &[String], gateway: &str, add: bool) -> usize {
         }
     };
 
-    let ps = format!(
-        "Start-Process cmd -ArgumentList '/c {}' -Verb RunAs -WindowStyle Hidden -Wait",
-        tmp
-    );
-    let ok = Command::new("powershell")
-        .args(["-NoProfile", "-Command", &ps])
-        .status()
-        .map(|s| s.success())
-        .unwrap_or(false);
+    let valid: Vec<&str> = subnets.iter()
+        .filter(|cidr| is_safe_ip(cidr))
+        .map(String::as_str)
+        .collect();
+    if valid.is_empty() { return 0; }
 
-    let _ = std::fs::remove_file(tmp);
-    if ok { lines.len() } else { 0 }
+    // App runs as administrator (requireAdministrator manifest), so call route.exe directly.
+    let mut success = 0usize;
+    for cidr in &valid {
+        let Some((net, prefix_str)) = cidr.split_once('/') else { continue; };
+        let Ok(prefix) = prefix_str.parse::<u8>() else { continue; };
+        let mask = prefix_to_mask(prefix);
+        let ok = if add {
+            Command::new("route")
+                .args(["ADD", net, "MASK", &mask, gateway])
+                .stdout(std::process::Stdio::null())
+                .stderr(std::process::Stdio::null())
+                .status()
+                .map(|s| s.success())
+                .unwrap_or(false)
+        } else {
+            Command::new("route")
+                .args(["DELETE", net, "MASK", &mask])
+                .stdout(std::process::Stdio::null())
+                .stderr(std::process::Stdio::null())
+                .status()
+                .map(|s| s.success())
+                .unwrap_or(false)
+        };
+        if ok { success += 1; }
+    }
+    success
 }
 
 #[cfg(not(any(target_os = "macos", target_os = "linux", target_os = "windows")))]
