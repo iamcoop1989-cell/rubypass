@@ -5,10 +5,15 @@ body {
   background: #12141f;
   color: #e2e8f0;
   user-select: none;
-  overflow: hidden;
-  height: 460px;
+  overflow-x: hidden;
+  overflow-y: auto;
   width: 320px;
 }
+
+/* Thin scrollbar so it doesn't take space */
+body::-webkit-scrollbar { width: 4px; }
+body::-webkit-scrollbar-track { background: transparent; }
+body::-webkit-scrollbar-thumb { background: #2a2a3e; border-radius: 2px; }
 
 .header {
   background: #1a1d2e;
