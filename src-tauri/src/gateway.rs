@@ -79,19 +79,21 @@ fn detect_linux() -> Result<String, String> {
 fn detect_windows() -> Result<String, String> {
     use std::os::windows::process::CommandExt;
     const CREATE_NO_WINDOW: u32 = 0x08000000;
-    let out = Command::new("powershell")
-        .args([
-            "-NoProfile",
-            "-Command",
-            "(Get-NetRoute -DestinationPrefix '0.0.0.0/0' | Sort-Object RouteMetric | Select-Object -First 1).NextHop",
-        ])
+    // `route print 0.0.0.0` is fast (no PowerShell startup) and shows the default route.
+    // Output line: "          0.0.0.0          0.0.0.0      192.168.1.1  ..."
+    let out = Command::new("route")
+        .args(["print", "0.0.0.0"])
         .creation_flags(CREATE_NO_WINDOW)
         .output()
         .map_err(|e| e.to_string())?;
-    if out.status.success() {
-        let gw = String::from_utf8_lossy(&out.stdout).trim().to_string();
-        if !gw.is_empty() {
-            return Ok(gw);
+    let text = String::from_utf8_lossy(&out.stdout);
+    for line in text.lines() {
+        let parts: Vec<&str> = line.split_whitespace().collect();
+        if parts.len() >= 3 && parts[0] == "0.0.0.0" && parts[1] == "0.0.0.0" {
+            let gw = parts[2];
+            if !gw.is_empty() && gw != "On-link" {
+                return Ok(gw.to_string());
+            }
         }
     }
     Err("Не удалось определить шлюз".to_string())

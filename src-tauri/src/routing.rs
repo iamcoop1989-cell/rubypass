@@ -108,49 +108,44 @@ fn run_batched(subnets: &[String], gateway: &str, add: bool) -> usize {
 
     if !is_safe_ip(gateway) { return 0; }
 
-    // If another routing operation is already running, drop this one rather than queue.
-    let _lock = match ROUTING_LOCK.try_lock() {
-        Ok(g) => g,
-        Err(_) => {
-            log::info!("Routing already in progress, skipping duplicate call");
-            return 0;
-        }
-    };
-
     let valid: Vec<&str> = subnets.iter()
         .filter(|cidr| is_safe_ip(cidr))
         .map(String::as_str)
         .collect();
     if valid.is_empty() { return 0; }
 
-    // App runs as administrator (requireAdministrator manifest), so call route.exe directly.
-    let mut success = 0usize;
+    // Serialize routing operations — wait for any in-progress operation to finish.
+    // try_lock was causing deletes to be skipped while adds were running,
+    // leading to duplicate routes accumulating.
+    let _lock = ROUTING_LOCK.lock().unwrap();
+
+    // Write a single batch file and run one cmd.exe instead of N route.exe processes.
+    // This eliminates N visible console windows and is significantly faster.
+    let mut script = String::from("@echo off\r\n");
+    let mut count = 0usize;
     for cidr in &valid {
         let Some((net, prefix_str)) = cidr.split_once('/') else { continue; };
         let Ok(prefix) = prefix_str.parse::<u8>() else { continue; };
         let mask = prefix_to_mask(prefix);
-        let ok = if add {
-            Command::new("route")
-                .args(["ADD", net, "MASK", &mask, gateway])
-                .creation_flags(CREATE_NO_WINDOW)
-                .stdout(std::process::Stdio::null())
-                .stderr(std::process::Stdio::null())
-                .status()
-                .map(|s| s.success())
-                .unwrap_or(false)
+        if add {
+            script.push_str(&format!("route ADD {} MASK {} {} >nul 2>&1\r\n", net, mask, gateway));
         } else {
-            Command::new("route")
-                .args(["DELETE", net, "MASK", &mask])
-                .creation_flags(CREATE_NO_WINDOW)
-                .stdout(std::process::Stdio::null())
-                .stderr(std::process::Stdio::null())
-                .status()
-                .map(|s| s.success())
-                .unwrap_or(false)
-        };
-        if ok { success += 1; }
+            script.push_str(&format!("route DELETE {} MASK {} >nul 2>&1\r\n", net, mask));
+        }
+        count += 1;
     }
-    success
+    if count == 0 { return 0; }
+
+    let tmp = std::env::temp_dir().join(if add { "rubypass_add.bat" } else { "rubypass_del.bat" });
+    if std::fs::write(&tmp, &script).is_err() { return 0; }
+    let ok = Command::new("cmd")
+        .args(["/c", tmp.to_str().unwrap_or("")])
+        .creation_flags(CREATE_NO_WINDOW)
+        .status()
+        .map(|s| s.success())
+        .unwrap_or(false);
+    let _ = std::fs::remove_file(&tmp);
+    if ok { count } else { 0 }
 }
 
 #[cfg(not(any(target_os = "macos", target_os = "linux", target_os = "windows")))]
@@ -284,13 +279,10 @@ pub(crate) fn routes_via_gateway(gateway: &str) -> Vec<String> {
     use std::os::windows::process::CommandExt;
     const CREATE_NO_WINDOW: u32 = 0x08000000;
     if !is_safe_ip(gateway) { return vec![]; }
-    let ps = format!(
-        "Get-NetRoute | Where-Object {{ $_.NextHop -eq '{}' }} | \
-         Select-Object -ExpandProperty DestinationPrefix",
-        gateway
-    );
-    let out = match Command::new("powershell")
-        .args(["-NoProfile", "-Command", &ps])
+    // `route print -4` lists all IPv4 routes without launching PowerShell.
+    // Line format: "    10.0.0.0    255.0.0.0    192.168.1.1    192.168.1.100    25"
+    let out = match Command::new("route")
+        .args(["print", "-4"])
         .creation_flags(CREATE_NO_WINDOW)
         .output()
     {
@@ -299,10 +291,23 @@ pub(crate) fn routes_via_gateway(gateway: &str) -> Vec<String> {
     };
     String::from_utf8_lossy(&out.stdout)
         .lines()
-        .map(str::trim)
-        .filter(|s| s.contains('/') && is_safe_ip(s))
-        .map(str::to_string)
+        .filter_map(|line| {
+            let parts: Vec<&str> = line.split_whitespace().collect();
+            if parts.len() >= 3 && parts[2] == gateway && is_safe_ip(parts[0]) && is_safe_ip(parts[1]) {
+                let prefix = mask_to_prefix(parts[1])?;
+                Some(format!("{}/{}", parts[0], prefix))
+            } else {
+                None
+            }
+        })
         .collect()
+}
+
+#[cfg(target_os = "windows")]
+fn mask_to_prefix(mask: &str) -> Option<u8> {
+    let parts: Vec<u8> = mask.split('.').filter_map(|p| p.parse().ok()).collect();
+    if parts.len() != 4 { return None; }
+    Some(u32::from_be_bytes([parts[0], parts[1], parts[2], parts[3]]).count_ones() as u8)
 }
 
 #[cfg(not(any(target_os = "macos", target_os = "linux", target_os = "windows")))]
