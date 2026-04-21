@@ -103,49 +103,57 @@ fn run_batched(subnets: &[String], gateway: &str, add: bool) -> usize {
 
 #[cfg(target_os = "windows")]
 fn run_batched(subnets: &[String], gateway: &str, add: bool) -> usize {
-    use std::os::windows::process::CommandExt;
-    const CREATE_NO_WINDOW: u32 = 0x08000000;
+    use windows::Win32::Foundation::ERROR_OBJECT_ALREADY_EXISTS;
+    use windows::Win32::NetworkManagement::IpHelper::{
+        CreateIpForwardEntry2, DeleteIpForwardEntry2, InitializeIpForwardEntry,
+        MIB_IPFORWARD_ROW2,
+    };
+    use windows::Win32::Networking::WinSock::AF_INET;
 
     if !is_safe_ip(gateway) { return 0; }
+    let Ok(gw_ip) = gateway.parse::<std::net::Ipv4Addr>() else { return 0 };
+    let gw_s_addr = ip_to_s_addr(gw_ip);
 
-    let valid: Vec<&str> = subnets.iter()
-        .filter(|cidr| is_safe_ip(cidr))
-        .map(String::as_str)
+    let valid: Vec<(u32, u8)> = subnets.iter()
+        .filter(|s| is_safe_ip(s))
+        .filter_map(|cidr| {
+            let (net, pfx) = cidr.split_once('/')?;
+            let ip: std::net::Ipv4Addr = net.parse().ok()?;
+            let prefix: u8 = pfx.parse().ok()?;
+            Some((ip_to_s_addr(ip), prefix))
+        })
         .collect();
     if valid.is_empty() { return 0; }
 
-    // Serialize routing operations — wait for any in-progress operation to finish.
-    // try_lock was causing deletes to be skipped while adds were running,
-    // leading to duplicate routes accumulating.
+    // Serialize so delete+add pairs from concurrent callers never interleave.
     let _lock = ROUTING_LOCK.lock().unwrap();
 
-    // Write a single batch file and run one cmd.exe instead of N route.exe processes.
-    // This eliminates N visible console windows and is significantly faster.
-    let mut script = String::from("@echo off\r\n");
-    let mut count = 0usize;
-    for cidr in &valid {
-        let Some((net, prefix_str)) = cidr.split_once('/') else { continue; };
-        let Ok(prefix) = prefix_str.parse::<u8>() else { continue; };
-        let mask = prefix_to_mask(prefix);
-        if add {
-            script.push_str(&format!("route ADD {} MASK {} {} >nul 2>&1\r\n", net, mask, gateway));
-        } else {
-            script.push_str(&format!("route DELETE {} MASK {} >nul 2>&1\r\n", net, mask));
-        }
-        count += 1;
-    }
-    if count == 0 { return 0; }
+    let mut success = 0usize;
+    for (net_s_addr, prefix) in valid {
+        unsafe {
+            let mut row: MIB_IPFORWARD_ROW2 = std::mem::zeroed();
+            InitializeIpForwardEntry(&mut row);
 
-    let tmp = std::env::temp_dir().join(if add { "rubypass_add.bat" } else { "rubypass_del.bat" });
-    if std::fs::write(&tmp, &script).is_err() { return 0; }
-    let ok = Command::new("cmd")
-        .args(["/c", tmp.to_str().unwrap_or("")])
-        .creation_flags(CREATE_NO_WINDOW)
-        .status()
-        .map(|s| s.success())
-        .unwrap_or(false);
-    let _ = std::fs::remove_file(&tmp);
-    if ok { count } else { 0 }
+            row.DestinationPrefix.PrefixLength = prefix;
+            row.DestinationPrefix.Prefix.Ipv4.sin_family = AF_INET;
+            row.DestinationPrefix.Prefix.Ipv4.sin_addr.S_un.S_addr = net_s_addr;
+
+            row.NextHop.Ipv4.sin_family = AF_INET;
+            row.NextHop.Ipv4.sin_addr.S_un.S_addr = gw_s_addr;
+
+            // Metric 1 ensures our direct routes beat VPN routes for the same prefix.
+            row.Metric = 1;
+
+            let ok = if add {
+                let r = CreateIpForwardEntry2(&row);
+                r.is_ok() || r == ERROR_OBJECT_ALREADY_EXISTS
+            } else {
+                DeleteIpForwardEntry2(&row).is_ok()
+            };
+            if ok { success += 1; }
+        }
+    }
+    success
 }
 
 #[cfg(not(any(target_os = "macos", target_os = "linux", target_os = "windows")))]
@@ -212,11 +220,18 @@ fn run_change(subnets: &[String], old_gateway: &str, new_gateway: &str) -> usize
 #[cfg(not(any(target_os = "macos", target_os = "linux", target_os = "windows")))]
 fn run_change(_subnets: &[String], _old_gateway: &str, _new_gateway: &str) -> usize { 0 }
 
+/// Convert an IPv4 address to WinSock S_addr (network byte order as u32).
 #[cfg(target_os = "windows")]
-fn prefix_to_mask(prefix: u8) -> String {
-    let mask: u32 = if prefix == 0 { 0 } else { !0u32 << (32 - prefix) };
-    let bytes = mask.to_be_bytes();
-    format!("{}.{}.{}.{}", bytes[0], bytes[1], bytes[2], bytes[3])
+fn ip_to_s_addr(ip: std::net::Ipv4Addr) -> u32 {
+    // from_ne_bytes places the octets in memory sequentially (network byte order).
+    u32::from_ne_bytes(ip.octets())
+}
+
+/// Convert WinSock S_addr back to Ipv4Addr.
+#[cfg(target_os = "windows")]
+fn s_addr_to_ip(s_addr: u32) -> std::net::Ipv4Addr {
+    // S_addr is big-endian in memory; from_be gives the canonical host-order value.
+    std::net::Ipv4Addr::from(u32::from_be(s_addr))
 }
 
 /// Read routes from the live system routing table that go via `gateway`.
@@ -276,38 +291,36 @@ pub(crate) fn routes_via_gateway(gateway: &str) -> Vec<String> {
 
 #[cfg(target_os = "windows")]
 pub(crate) fn routes_via_gateway(gateway: &str) -> Vec<String> {
-    use std::os::windows::process::CommandExt;
-    const CREATE_NO_WINDOW: u32 = 0x08000000;
-    if !is_safe_ip(gateway) { return vec![]; }
-    // `route print -4` lists all IPv4 routes without launching PowerShell.
-    // Line format: "    10.0.0.0    255.0.0.0    192.168.1.1    192.168.1.100    25"
-    let out = match Command::new("route")
-        .args(["print", "-4"])
-        .creation_flags(CREATE_NO_WINDOW)
-        .output()
-    {
-        Ok(o) => o,
-        Err(_) => return vec![],
+    use windows::Win32::NetworkManagement::IpHelper::{
+        FreeMibTable, GetIpForwardTable2, MIB_IPFORWARD_TABLE2,
     };
-    String::from_utf8_lossy(&out.stdout)
-        .lines()
-        .filter_map(|line| {
-            let parts: Vec<&str> = line.split_whitespace().collect();
-            if parts.len() >= 3 && parts[2] == gateway && is_safe_ip(parts[0]) && is_safe_ip(parts[1]) {
-                let prefix = mask_to_prefix(parts[1])?;
-                Some(format!("{}/{}", parts[0], prefix))
-            } else {
-                None
-            }
-        })
-        .collect()
-}
+    use windows::Win32::Networking::WinSock::AF_INET;
 
-#[cfg(target_os = "windows")]
-fn mask_to_prefix(mask: &str) -> Option<u8> {
-    let parts: Vec<u8> = mask.split('.').filter_map(|p| p.parse().ok()).collect();
-    if parts.len() != 4 { return None; }
-    Some(u32::from_be_bytes([parts[0], parts[1], parts[2], parts[3]]).count_ones() as u8)
+    if !is_safe_ip(gateway) { return vec![]; }
+    let Ok(gw_ip) = gateway.parse::<std::net::Ipv4Addr>() else { return vec![] };
+    let gw_s_addr = ip_to_s_addr(gw_ip);
+
+    unsafe {
+        let mut table: *mut MIB_IPFORWARD_TABLE2 = std::ptr::null_mut();
+        if GetIpForwardTable2(AF_INET, &mut table).is_err() || table.is_null() {
+            return vec![];
+        }
+        let num = (*table).NumEntries as usize;
+        let rows = std::slice::from_raw_parts((*table).Table.as_ptr(), num);
+        let result: Vec<String> = rows.iter()
+            .filter_map(|row| {
+                if row.DestinationPrefix.Prefix.si_family != AF_INET { return None; }
+                if row.NextHop.si_family != AF_INET { return None; }
+                if row.NextHop.Ipv4.sin_addr.S_un.S_addr != gw_s_addr { return None; }
+                let prefix = row.DestinationPrefix.PrefixLength;
+                if prefix == 0 { return None; }
+                let ip = s_addr_to_ip(row.DestinationPrefix.Prefix.Ipv4.sin_addr.S_un.S_addr);
+                Some(format!("{}/{}", ip, prefix))
+            })
+            .collect();
+        FreeMibTable(table as *const _);
+        result
+    }
 }
 
 #[cfg(not(any(target_os = "macos", target_os = "linux", target_os = "windows")))]
@@ -316,14 +329,6 @@ pub(crate) fn routes_via_gateway(_gateway: &str) -> Vec<String> { vec![] }
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[cfg(target_os = "windows")]
-    #[test]
-    fn test_prefix_to_mask() {
-        assert_eq!(prefix_to_mask(24), "255.255.255.0");
-        assert_eq!(prefix_to_mask(16), "255.255.0.0");
-        assert_eq!(prefix_to_mask(32), "255.255.255.255");
-    }
 
     #[test]
     fn test_is_safe_ip_blocks_injection() {
