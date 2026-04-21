@@ -19,10 +19,14 @@ use tauri::{
 };
 
 fn main() {
-    env_logger::init();
     let cfg = config::load();
 
     tauri::Builder::default()
+        .plugin(
+            tauri_plugin_log::Builder::new()
+                .level(log::LevelFilter::Info)
+                .build(),
+        )
         .plugin(tauri_plugin_autostart::init(
             tauri_plugin_autostart::MacosLauncher::LaunchAgent,
             None,
