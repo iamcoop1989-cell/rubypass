@@ -60,6 +60,10 @@ jobs:
           updaterJsonPreferNsis: true
 
       # Manual run → just build and upload artifacts
+      - name: Install Tauri CLI
+        if: github.event_name == 'workflow_dispatch'
+        run: cargo install tauri-cli --version "^2" --locked
+
       - name: Build
         if: github.event_name == 'workflow_dispatch'
         working-directory: src-tauri
