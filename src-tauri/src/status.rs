@@ -1,4 +1,5 @@
 use serde::Serialize;
+#[cfg(any(target_os = "macos", target_os = "linux"))]
 use std::process::Command;
 
 #[derive(Debug, Serialize, Clone)]
@@ -59,19 +60,36 @@ fn detect_vpn() -> Option<String> {
 
 #[cfg(target_os = "windows")]
 fn detect_vpn() -> Option<String> {
-    let out = Command::new("powershell")
-        .args([
-            "-NoProfile",
-            "-Command",
-            "Get-NetAdapter | Where-Object {$_.InterfaceDescription -match 'TAP|TUN|VPN'} | Select-Object -First 1 -ExpandProperty Name",
-        ])
-        .output()
-        .ok()?;
-    let name = String::from_utf8_lossy(&out.stdout).trim().to_string();
-    if name.is_empty() {
+    use windows::Win32::NetworkManagement::IpHelper::{GetAdaptersInfo, IP_ADAPTER_INFO};
+    use windows::Win32::Foundation::ERROR_BUFFER_OVERFLOW;
+    unsafe {
+        let mut size: u32 = 0;
+        let _ = GetAdaptersInfo(None, &mut size);
+        if size == 0 { return None; }
+        let count = (size as usize).div_ceil(std::mem::size_of::<IP_ADAPTER_INFO>()) + 1;
+        let mut buf: Vec<IP_ADAPTER_INFO> = Vec::with_capacity(count);
+        buf.set_len(count);
+        let ret = GetAdaptersInfo(Some(buf.as_mut_ptr()), &mut size);
+        if ret != windows::Win32::Foundation::NO_ERROR && ret != ERROR_BUFFER_OVERFLOW {
+            return None;
+        }
+        let mut ptr = buf.as_ptr();
+        while !ptr.is_null() {
+            let adapter = &*ptr;
+            let desc = std::ffi::CStr::from_ptr(adapter.Description.as_ptr())
+                .to_string_lossy()
+                .to_lowercase();
+            if desc.contains("tap") || desc.contains("tun") || desc.contains("vpn")
+                || desc.contains("wireguard") || desc.contains("openvpn")
+            {
+                let name = std::ffi::CStr::from_ptr(adapter.AdapterName.as_ptr())
+                    .to_string_lossy()
+                    .to_string();
+                return Some(name);
+            }
+            ptr = adapter.Next;
+        }
         None
-    } else {
-        Some(name)
     }
 }
 
