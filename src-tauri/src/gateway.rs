@@ -77,12 +77,15 @@ fn detect_linux() -> Result<String, String> {
 
 #[cfg(target_os = "windows")]
 fn detect_windows() -> Result<String, String> {
+    use std::os::windows::process::CommandExt;
+    const CREATE_NO_WINDOW: u32 = 0x08000000;
     let out = Command::new("powershell")
         .args([
             "-NoProfile",
             "-Command",
             "(Get-NetRoute -DestinationPrefix '0.0.0.0/0' | Sort-Object RouteMetric | Select-Object -First 1).NextHop",
         ])
+        .creation_flags(CREATE_NO_WINDOW)
         .output()
         .map_err(|e| e.to_string())?;
     if out.status.success() {

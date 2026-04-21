@@ -103,6 +103,9 @@ fn run_batched(subnets: &[String], gateway: &str, add: bool) -> usize {
 
 #[cfg(target_os = "windows")]
 fn run_batched(subnets: &[String], gateway: &str, add: bool) -> usize {
+    use std::os::windows::process::CommandExt;
+    const CREATE_NO_WINDOW: u32 = 0x08000000;
+
     if !is_safe_ip(gateway) { return 0; }
 
     // If another routing operation is already running, drop this one rather than queue.
@@ -129,6 +132,7 @@ fn run_batched(subnets: &[String], gateway: &str, add: bool) -> usize {
         let ok = if add {
             Command::new("route")
                 .args(["ADD", net, "MASK", &mask, gateway])
+                .creation_flags(CREATE_NO_WINDOW)
                 .stdout(std::process::Stdio::null())
                 .stderr(std::process::Stdio::null())
                 .status()
@@ -137,6 +141,7 @@ fn run_batched(subnets: &[String], gateway: &str, add: bool) -> usize {
         } else {
             Command::new("route")
                 .args(["DELETE", net, "MASK", &mask])
+                .creation_flags(CREATE_NO_WINDOW)
                 .stdout(std::process::Stdio::null())
                 .stderr(std::process::Stdio::null())
                 .status()
@@ -276,6 +281,8 @@ pub(crate) fn routes_via_gateway(gateway: &str) -> Vec<String> {
 
 #[cfg(target_os = "windows")]
 pub(crate) fn routes_via_gateway(gateway: &str) -> Vec<String> {
+    use std::os::windows::process::CommandExt;
+    const CREATE_NO_WINDOW: u32 = 0x08000000;
     if !is_safe_ip(gateway) { return vec![]; }
     let ps = format!(
         "Get-NetRoute | Where-Object {{ $_.NextHop -eq '{}' }} | \
@@ -284,6 +291,7 @@ pub(crate) fn routes_via_gateway(gateway: &str) -> Vec<String> {
     );
     let out = match Command::new("powershell")
         .args(["-NoProfile", "-Command", &ps])
+        .creation_flags(CREATE_NO_WINDOW)
         .output()
     {
         Ok(o) => o,
