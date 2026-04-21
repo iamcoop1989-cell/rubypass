@@ -3,6 +3,8 @@
 mod commands;
 mod config;
 mod gateway;
+#[cfg(any(target_os = "macos", target_os = "linux"))]
+mod helper;
 mod network_watch;
 mod routing;
 mod scheduler;
@@ -10,7 +12,6 @@ mod status;
 mod updater;
 
 use commands::AppState;
-use std::sync::Mutex;
 use tauri::{
     menu::{Menu, MenuItem},
     tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent},
@@ -26,7 +27,8 @@ fn main() {
             tauri_plugin_autostart::MacosLauncher::LaunchAgent,
             None,
         ))
-        .manage(AppState(Mutex::new(cfg)))
+        .plugin(tauri_plugin_dialog::init())
+        .manage(AppState::new(cfg))
         .invoke_handler(tauri::generate_handler![
             commands::get_status,
             commands::get_config,
@@ -58,8 +60,11 @@ fn setup_tray(app: &mut tauri::App) -> tauri::Result<()> {
     let quit = MenuItem::with_id(app, "quit", "Выйти", true, None::<&str>)?;
     let menu = Menu::with_items(app, &[&open, &toggle, &quit])?;
 
+    let initial_icon = tauri::image::Image::from_bytes(include_bytes!("../icons/icon-red.png"))
+        .expect("icon-red.png is a valid RGBA PNG");
+
     TrayIconBuilder::with_id("main")
-        .icon(app.default_window_icon().unwrap().clone())
+        .icon(initial_icon)
         .menu(&menu)
         .on_tray_icon_event(|tray, event| {
             // On macOS DoubleClick is not emitted; use Click instead.
@@ -87,7 +92,33 @@ fn setup_tray(app: &mut tauri::App) -> tauri::Result<()> {
                 let state = app.state::<AppState>();
                 let _ = commands::toggle_bypass(app.clone(), state);
             }
-            "quit" => app.exit(0),
+            "quit" => {
+                use tauri_plugin_dialog::DialogExt;
+                let bypass_enabled = app
+                    .state::<AppState>()
+                    .0.lock().unwrap()
+                    .config.bypass_enabled;
+
+                if bypass_enabled {
+                    let app2 = app.clone();
+                    app.dialog()
+                        .message("Маршруты для обхода блокировок останутся активными после выхода.\nОчистить перед выходом?")
+                        .title("RuBypass")
+                        .buttons(tauri_plugin_dialog::MessageDialogButtons::OkCancelCustom(
+                            "Очистить и выйти".to_string(),
+                            "Просто выйти".to_string(),
+                        ))
+                        .show(move |clear| {
+                            if clear {
+                                let state = app2.state::<AppState>();
+                                let _ = commands::disable_bypass_inner(&app2, &state);
+                            }
+                            app2.exit(0);
+                        });
+                } else {
+                    app.exit(0);
+                }
+            }
             _ => {}
         })
         .build(app)?;
@@ -106,11 +137,11 @@ fn setup_first_launch(app: &mut tauri::App) {
             if let Ok(count) = updater::download_and_save() {
                 let state = handle.state::<commands::AppState>();
                 {
-                    let mut cfg = state.0.lock().unwrap();
-                    cfg.last_updated = Some(
+                    let mut inner = state.0.lock().unwrap();
+                    inner.config.last_updated = Some(
                         chrono::Utc::now().format("%Y-%m-%dT%H:%M:%SZ").to_string()
                     );
-                    let _ = config::save(&cfg);
+                    let _ = config::save(&inner.config);
                 }
                 log::info!("Downloaded {} subnets, enabling bypass", count);
                 let _ = commands::enable_bypass_inner(&handle, &state);
@@ -119,7 +150,7 @@ fn setup_first_launch(app: &mut tauri::App) {
     } else {
         std::thread::spawn(move || {
             let state = handle.state::<commands::AppState>();
-            let enabled = state.0.lock().unwrap().bypass_enabled;
+            let enabled = state.0.lock().unwrap().config.bypass_enabled;
             if enabled {
                 let _ = commands::enable_bypass_inner(&handle, &state);
             }

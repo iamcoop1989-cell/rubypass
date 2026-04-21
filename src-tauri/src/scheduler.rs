@@ -9,22 +9,23 @@ pub fn start(app: AppHandle) {
             // Check every hour whether an update is due
             std::thread::sleep(std::time::Duration::from_secs(3600));
             let state = app.state::<crate::commands::AppState>();
-            let cfg = state.0.lock().unwrap().clone();
+            let cfg = state.0.lock().unwrap().config.clone();
             drop(state);
 
             if should_update(&cfg) {
                 log::info!("Scheduled update triggered");
                 if let Ok(count) = crate::updater::download_and_save() {
                     let state2 = app.state::<crate::commands::AppState>();
-                    {
-                        let mut cfg2 = state2.0.lock().unwrap();
-                        cfg2.last_updated = Some(
+                    let bypass_enabled = {
+                        let mut inner = state2.0.lock().unwrap();
+                        inner.config.last_updated = Some(
                             Utc::now().format("%Y-%m-%dT%H:%M:%SZ").to_string()
                         );
-                        let _ = crate::config::save(&cfg2);
-                    }
+                        let _ = crate::config::save(&inner.config);
+                        inner.subnets_cache = None; // invalidate cache
+                        inner.config.bypass_enabled
+                    };
                     log::info!("Scheduled update done: {} subnets", count);
-                    let bypass_enabled = state2.0.lock().unwrap().bypass_enabled;
                     if bypass_enabled {
                         let _ = crate::commands::disable_bypass_inner(&app, &state2);
                         let _ = crate::commands::enable_bypass_inner(&app, &state2);

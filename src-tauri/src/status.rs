@@ -29,46 +29,12 @@ pub fn collect(bypass_enabled: bool, last_updated: Option<String>) -> AppStatus 
     }
 }
 
-#[cfg(target_os = "macos")]
 fn count_active_routes() -> usize {
-    let out = Command::new("netstat").args(["-rn"]).output();
-    match out {
-        Ok(o) => {
-            let text = String::from_utf8_lossy(&o.stdout);
-            text.lines()
-                .filter(|l| !l.contains("utun") && l.contains("en0"))
-                .count()
-        }
-        Err(_) => 0,
-    }
-}
-
-#[cfg(target_os = "linux")]
-fn count_active_routes() -> usize {
-    let out = Command::new("netstat").args(["-rn"]).output();
-    match out {
-        Ok(o) => {
-            let text = String::from_utf8_lossy(&o.stdout);
-            text.lines()
-                .filter(|l| !l.contains("tun") && (l.contains("eth0") || l.contains("wlan0")))
-                .count()
-        }
-        Err(_) => 0,
-    }
-}
-
-#[cfg(target_os = "windows")]
-fn count_active_routes() -> usize {
-    let out = Command::new("route").args(["PRINT"]).output();
-    match out {
-        Ok(o) => String::from_utf8_lossy(&o.stdout).lines().count(),
-        Err(_) => 0,
-    }
-}
-
-#[cfg(not(any(target_os = "macos", target_os = "linux", target_os = "windows")))]
-fn count_active_routes() -> usize {
-    0
+    let gateway = match crate::gateway::detect() {
+        Ok(gw) => gw,
+        Err(_) => return 0,
+    };
+    crate::routing::routes_via_gateway(&gateway).len()
 }
 
 #[cfg(target_os = "macos")]

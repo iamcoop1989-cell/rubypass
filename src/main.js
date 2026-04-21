@@ -68,15 +68,34 @@ function renderStatus(status, config) {
   ab.className = 'toggle-small' + (config.autostart ? ' on' : '');
 }
 
+function showLoading(title) {
+  document.getElementById('loading-title').textContent = title;
+  document.getElementById('loading-banner').className = 'loading-banner visible';
+  document.getElementById('toggle-btn').className = 'toggle loading';
+  document.getElementById('toggle-btn').onclick = null;
+}
+
+function hideLoading() {
+  document.getElementById('loading-banner').className = 'loading-banner';
+  document.getElementById('toggle-btn').onclick = toggleBypass;
+}
+
+function nextFrame() {
+  return new Promise(resolve => requestAnimationFrame(resolve));
+}
+
 async function toggleBypass() {
-  const btn = document.getElementById('toggle-btn');
-  btn.className = 'toggle loading';
+  const isOn = document.getElementById('toggle-btn').classList.contains('on');
+  showLoading(isOn ? 'Отключается…' : 'Включается…');
+  await nextFrame(); // дать браузеру нарисовать баннер до тяжёлого вызова
   try {
     await invoke('toggle_bypass');
     await refresh();
   } catch (e) {
     showToast(String(e), true);
     await refresh();
+  } finally {
+    hideLoading();
   }
 }
 
@@ -84,6 +103,8 @@ async function updateSubnets() {
   const btn = document.getElementById('btn-update');
   btn.disabled = true;
   btn.textContent = 'Загрузка…';
+  showLoading('Обновление списка IP…');
+  await nextFrame();
   try {
     const count = await invoke('update_subnets');
     showToast('Обновлено: ' + count.toLocaleString('ru') + ' подсетей');
@@ -93,6 +114,7 @@ async function updateSubnets() {
   } finally {
     btn.disabled = false;
     btn.textContent = 'Обновить';
+    hideLoading();
   }
 }
 

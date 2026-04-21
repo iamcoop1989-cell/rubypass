@@ -19,11 +19,7 @@
         "alwaysOnTop": false,
         "skipTaskbar": true
       }
-    ],
-    "trayIcon": {
-      "iconPath": "icons/icon-red.png",
-      "iconAsTemplate": true
-    }
+    ]
   },
   "bundle": {
     "active": true,
