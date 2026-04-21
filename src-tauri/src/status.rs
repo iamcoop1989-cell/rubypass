@@ -61,16 +61,17 @@ fn detect_vpn() -> Option<String> {
 #[cfg(target_os = "windows")]
 fn detect_vpn() -> Option<String> {
     use windows::Win32::NetworkManagement::IpHelper::{GetAdaptersInfo, IP_ADAPTER_INFO};
-    use windows::Win32::Foundation::ERROR_BUFFER_OVERFLOW;
+    const NO_ERROR: u32 = 0;
+    const ERROR_BUFFER_OVERFLOW: u32 = 111;
     unsafe {
         let mut size: u32 = 0;
         let _ = GetAdaptersInfo(None, &mut size);
         if size == 0 { return None; }
-        let count = (size as usize).div_ceil(std::mem::size_of::<IP_ADAPTER_INFO>()) + 1;
+        let count = size as usize / std::mem::size_of::<IP_ADAPTER_INFO>() + 2;
         let mut buf: Vec<IP_ADAPTER_INFO> = Vec::with_capacity(count);
         buf.set_len(count);
         let ret = GetAdaptersInfo(Some(buf.as_mut_ptr()), &mut size);
-        if ret != windows::Win32::Foundation::NO_ERROR && ret != ERROR_BUFFER_OVERFLOW {
+        if ret != NO_ERROR && ret != ERROR_BUFFER_OVERFLOW {
             return None;
         }
         let mut ptr = buf.as_ptr();
