@@ -125,14 +125,24 @@ fn run_batched(subnets: &[String], gateway: &str, add: bool) -> usize {
         .collect();
     if valid.is_empty() { return 0; }
 
+    // Find the InterfaceIndex of the physical adapter that owns this gateway.
+    // With multiple adapters (VPN + physical) Windows may not auto-determine
+    // the correct interface when InterfaceIndex=0, causing silent failures.
+    let if_index = find_interface_index_for_gateway(gw_s_addr);
+    log::info!("routing: action={} gateway={} if_index={} subnets={}",
+        if add {"add"} else {"del"}, gateway, if_index, valid.len());
+
     // Serialize so delete+add pairs from concurrent callers never interleave.
     let _lock = ROUTING_LOCK.lock().unwrap();
 
     let mut success = 0usize;
+    let mut first_err_logged = false;
     for (net_s_addr, prefix) in valid {
         unsafe {
             let mut row: MIB_IPFORWARD_ROW2 = std::mem::zeroed();
             InitializeIpForwardEntry(&mut row);
+
+            row.InterfaceIndex = if_index;
 
             row.DestinationPrefix.PrefixLength = prefix;
             row.DestinationPrefix.Prefix.Ipv4.sin_family = AF_INET;
@@ -146,6 +156,10 @@ fn run_batched(subnets: &[String], gateway: &str, add: bool) -> usize {
 
             let ok = if add {
                 let r = CreateIpForwardEntry2(&row);
+                if r.is_err() && !first_err_logged {
+                    log::error!("CreateIpForwardEntry2 failed: {:?}", r);
+                    first_err_logged = true;
+                }
                 r.is_ok() || r == ERROR_OBJECT_ALREADY_EXISTS
             } else {
                 DeleteIpForwardEntry2(&row).is_ok()
@@ -153,7 +167,33 @@ fn run_batched(subnets: &[String], gateway: &str, add: bool) -> usize {
             if ok { success += 1; }
         }
     }
+    log::info!("routing: done — {}/{} succeeded", success, valid.len() + success - success /* total */);
     success
+}
+
+/// Find the InterfaceIndex of the adapter that already has a route via this
+/// gateway. With multiple adapters (VPN, TAP, physical) Windows may fail to
+/// auto-determine the interface when InterfaceIndex = 0.
+#[cfg(target_os = "windows")]
+fn find_interface_index_for_gateway(gw_s_addr: u32) -> u32 {
+    use windows::Win32::NetworkManagement::IpHelper::{FreeMibTable, GetIpForwardTable2, MIB_IPFORWARD_TABLE2};
+    use windows::Win32::Networking::WinSock::AF_INET;
+    unsafe {
+        let mut table: *mut MIB_IPFORWARD_TABLE2 = std::ptr::null_mut();
+        if GetIpForwardTable2(AF_INET, &mut table).is_err() || table.is_null() {
+            return 0;
+        }
+        let num = (*table).NumEntries as usize;
+        let rows = std::slice::from_raw_parts((*table).Table.as_ptr(), num);
+        // Find any existing route with this gateway as NextHop (typically
+        // the default route 0.0.0.0/0 added by the OS for this adapter).
+        let idx = rows.iter()
+            .find(|row| row.NextHop.Ipv4.sin_addr.S_un.S_addr == gw_s_addr)
+            .map(|row| row.InterfaceIndex)
+            .unwrap_or(0);
+        FreeMibTable(table as *const _);
+        idx
+    }
 }
 
 #[cfg(not(any(target_os = "macos", target_os = "linux", target_os = "windows")))]

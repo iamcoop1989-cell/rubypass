@@ -192,8 +192,14 @@ pub fn enable_bypass_inner(app: &AppHandle, state: &State<AppState>) -> Result<(
     }
 
     let added = routing::add_routes(&subnets, &gateway);
+    log::info!("enable_bypass: added {}/{} routes via {}", added, subnets.len(), gateway);
     if added == 0 && !subnets.is_empty() {
-        log::warn!("add_routes returned 0 successes for {} subnets", subnets.len());
+        stop_spinner();
+        set_tray_icon(app, TrayState::Inactive);
+        return Err(format!(
+            "Не удалось добавить маршруты (шлюз: {}). Проверьте логи.",
+            gateway
+        ));
     }
 
     let mut inner = state.0.lock().unwrap();
