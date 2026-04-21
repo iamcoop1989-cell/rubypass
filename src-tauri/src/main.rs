@@ -28,6 +28,7 @@ fn main() {
             None,
         ))
         .plugin(tauri_plugin_dialog::init())
+        .plugin(tauri_plugin_updater::Builder::new().build())
         .manage(AppState::new(cfg))
         .invoke_handler(tauri::generate_handler![
             commands::get_status,
@@ -42,6 +43,12 @@ fn main() {
             setup_first_launch(app);
             network_watch::start(app.handle().clone());
             scheduler::start(app.handle().clone());
+            let update_handle = app.handle().clone();
+            tauri::async_runtime::spawn(async move {
+                // Delay so the app finishes launching before showing a dialog
+                tokio::time::sleep(std::time::Duration::from_secs(5)).await;
+                check_for_updates(update_handle).await;
+            });
             Ok(())
         })
         .on_window_event(|window, event| {
@@ -123,6 +130,37 @@ fn setup_tray(app: &mut tauri::App) -> tauri::Result<()> {
         })
         .build(app)?;
     Ok(())
+}
+
+async fn check_for_updates(app: tauri::AppHandle) {
+    use tauri_plugin_updater::UpdaterExt;
+    let update = match app.updater() {
+        Ok(u) => match u.check().await {
+            Ok(Some(u)) => u,
+            _ => return,
+        },
+        Err(_) => return,
+    };
+    use tauri_plugin_dialog::DialogExt;
+    let install = app
+        .dialog()
+        .message(format!(
+            "Доступна новая версия {}.\nУстановить сейчас?",
+            update.version
+        ))
+        .title("Обновление RuBypass")
+        .buttons(tauri_plugin_dialog::MessageDialogButtons::OkCancelCustom(
+            "Установить".to_string(),
+            "Позже".to_string(),
+        ))
+        .blocking_show();
+    if install {
+        if let Err(e) = update.download_and_install(|_, _| {}, || {}).await {
+            log::warn!("Update failed: {e}");
+        } else {
+            app.restart();
+        }
+    }
 }
 
 fn setup_first_launch(app: &mut tauri::App) {
