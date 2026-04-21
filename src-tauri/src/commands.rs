@@ -85,15 +85,52 @@ pub async fn update_subnets(app: AppHandle, _state: State<'_, AppState>) -> Resu
 
 #[tauri::command]
 pub fn set_autostart(enabled: bool, app: AppHandle, state: State<AppState>) -> Result<(), String> {
-    use tauri_plugin_autostart::ManagerExt;
     let mut inner = state.0.lock().unwrap();
     inner.config.autostart = enabled;
     config::save(&inner.config)?;
-    let manager = app.autolaunch();
-    if enabled {
-        manager.enable().map_err(|e| e.to_string())
-    } else {
-        manager.disable().map_err(|e| e.to_string())
+    drop(inner);
+
+    #[cfg(target_os = "windows")]
+    {
+        // requireAdministrator in the manifest breaks registry-based autostart
+        // (Windows won't auto-elevate Run key entries). Use Task Scheduler instead.
+        use std::os::windows::process::CommandExt;
+        const CREATE_NO_WINDOW: u32 = 0x08000000;
+        if enabled {
+            let exe = std::env::current_exe().map_err(|e| e.to_string())?;
+            let exe_path = exe.to_string_lossy().to_string();
+            let status = std::process::Command::new("schtasks")
+                .args([
+                    "/create", "/tn", "RuBypass",
+                    "/tr", &exe_path,
+                    "/sc", "onlogon",
+                    "/rl", "highest",
+                    "/f",
+                ])
+                .creation_flags(CREATE_NO_WINDOW)
+                .status()
+                .map_err(|e| e.to_string())?;
+            if !status.success() {
+                return Err("Не удалось создать задачу автозапуска".to_string());
+            }
+        } else {
+            let _ = std::process::Command::new("schtasks")
+                .args(["/delete", "/tn", "RuBypass", "/f"])
+                .creation_flags(CREATE_NO_WINDOW)
+                .status();
+        }
+        return Ok(());
+    }
+
+    #[cfg(not(target_os = "windows"))]
+    {
+        use tauri_plugin_autostart::ManagerExt;
+        let manager = app.autolaunch();
+        if enabled {
+            manager.enable().map_err(|e| e.to_string())
+        } else {
+            manager.disable().map_err(|e| e.to_string())
+        }
     }
 }
 

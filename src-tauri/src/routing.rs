@@ -309,8 +309,9 @@ pub(crate) fn routes_via_gateway(gateway: &str) -> Vec<String> {
         let rows = std::slice::from_raw_parts((*table).Table.as_ptr(), num);
         let result: Vec<String> = rows.iter()
             .filter_map(|row| {
-                if row.DestinationPrefix.Prefix.si_family != AF_INET { return None; }
-                if row.NextHop.si_family != AF_INET { return None; }
+                // GetIpForwardTable2(AF_INET) already filters to IPv4,
+                // but Windows may not populate si_family in returned rows —
+                // match by raw S_addr only.
                 if row.NextHop.Ipv4.sin_addr.S_un.S_addr != gw_s_addr { return None; }
                 let prefix = row.DestinationPrefix.PrefixLength;
                 if prefix == 0 { return None; }
