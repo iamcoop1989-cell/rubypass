@@ -37,6 +37,7 @@ fn main() {
             commands::update_subnets,
             commands::set_autostart,
             commands::set_update_schedule,
+            commands::clear_all_routes,
         ])
         .setup(|app| {
             setup_tray(app)?;

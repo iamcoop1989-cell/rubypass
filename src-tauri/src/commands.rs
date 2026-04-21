@@ -107,6 +107,34 @@ pub fn set_update_schedule(
     config::save(&inner.config)
 }
 
+/// Remove every route we may have installed, regardless of current bypass state.
+/// Useful after crashes or repeated testing left stale routes behind.
+#[tauri::command]
+pub async fn clear_all_routes(app: AppHandle, state: State<'_, AppState>) -> Result<usize, String> {
+    let app2 = app.clone();
+    tokio::task::spawn_blocking(move || {
+        let state2 = app2.state::<AppState>();
+        let gateway = {
+            let inner = state2.0.lock().unwrap();
+            inner.config.gateway_override.clone()
+                .unwrap_or_else(|| crate::gateway::detect().unwrap_or_default())
+        };
+        if gateway.is_empty() {
+            return Err("Не удалось определить шлюз".to_string());
+        }
+        let live = crate::routing::routes_via_gateway(&gateway);
+        let removed = crate::routing::remove_routes(&live, &gateway);
+        // Mark as disabled since all routes are gone.
+        let mut inner = state2.0.lock().unwrap();
+        inner.config.bypass_enabled = false;
+        let _ = config::save(&inner.config);
+        set_tray_icon(&app2, TrayState::Inactive);
+        Ok(removed)
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
 // ── bypass logic ─────────────────────────────────────────────────────────────
 
 pub fn enable_bypass_inner(app: &AppHandle, state: &State<AppState>) -> Result<(), String> {

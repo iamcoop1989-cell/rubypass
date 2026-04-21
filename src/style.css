@@ -161,6 +161,19 @@ body::-webkit-scrollbar-thumb { background: #2a2a3e; border-radius: 2px; }
 }
 .toggle-small.on::after { transform: translateX(16px); }
 
+.btn-clear {
+  background: transparent;
+  color: #6b7280;
+  border: 1px solid #374151;
+  border-radius: 6px;
+  padding: 4px 10px;
+  font-size: 11px;
+  cursor: pointer;
+  transition: color 0.15s, border-color 0.15s;
+}
+.btn-clear:hover { color: #ef4444; border-color: #ef4444; }
+.btn-clear:disabled { opacity: 0.4; cursor: not-allowed; }
+
 .toast {
   position: fixed; bottom: 12px; left: 50%; transform: translateX(-50%);
   background: #1e293b; color: #e2e8f0;

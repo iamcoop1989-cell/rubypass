@@ -126,6 +126,20 @@ async function setSchedule(value) {
   }
 }
 
+async function clearRoutes() {
+  const btn = document.getElementById('btn-clear');
+  btn.disabled = true;
+  try {
+    const removed = await invoke('clear_all_routes');
+    showToast('Удалено маршрутов: ' + removed.toLocaleString('ru'));
+    await refresh();
+  } catch (e) {
+    showToast(String(e), true);
+  } finally {
+    btn.disabled = false;
+  }
+}
+
 async function toggleAutostart() {
   autostartEnabled = !autostartEnabled;
   try {
