@@ -1,6 +1,6 @@
 // src-tauri/src/network_watch.rs
 use tauri::{AppHandle, Emitter, Manager};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 pub fn start(app: AppHandle) {
     std::thread::spawn(move || {
@@ -10,6 +10,9 @@ pub fn start(app: AppHandle) {
 
 fn poll_loop(app: AppHandle) {
     let mut last_gateway = crate::gateway::detect().ok();
+    // Debounce: don't reapply routes more than once per 30 seconds.
+    // On Windows, DHCP init causes many rapid gateway changes at startup.
+    let mut last_reapply = Instant::now() - Duration::from_secs(60);
 
     loop {
         std::thread::sleep(Duration::from_secs(10));
@@ -23,7 +26,12 @@ fn poll_loop(app: AppHandle) {
 
             std::thread::sleep(Duration::from_secs(3));
 
-            handle_network_change(&app, old);
+            if last_reapply.elapsed() >= Duration::from_secs(30) {
+                last_reapply = Instant::now();
+                handle_network_change(&app, old);
+            } else {
+                log::info!("Gateway change debounced (last reapply was <30s ago)");
+            }
         }
     }
 }

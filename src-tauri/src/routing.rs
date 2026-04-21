@@ -127,8 +127,14 @@ fn run_batched(subnets: &[String], gateway: &str, add: bool) -> usize {
     let tmp = if add { "C:\\Windows\\Temp\\rubypass_add.bat" } else { "C:\\Windows\\Temp\\rubypass_del.bat" };
     if std::fs::write(tmp, &script).is_err() { return 0; }
 
-    // Hold lock so concurrent calls don't spawn multiple elevated windows.
-    let _lock = ROUTING_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    // If another routing operation is already running, drop this one rather than queue.
+    let _lock = match ROUTING_LOCK.try_lock() {
+        Ok(g) => g,
+        Err(_) => {
+            log::info!("Routing already in progress, skipping duplicate call");
+            return 0;
+        }
+    };
 
     let ps = format!(
         "Start-Process cmd -ArgumentList '/c {}' -Verb RunAs -WindowStyle Hidden -Wait",
