@@ -135,9 +135,11 @@ fn run_batched(subnets: &[String], gateway: &str, add: bool) -> usize {
     // Serialize so delete+add pairs from concurrent callers never interleave.
     let _lock = ROUTING_LOCK.lock().unwrap();
 
+    let total = valid.len();
     let mut success = 0usize;
     let mut first_err_logged = false;
-    for (net_s_addr, prefix) in valid {
+    for (net_s_addr, prefix) in &valid {
+        let (net_s_addr, prefix) = (*net_s_addr, *prefix);
         unsafe {
             let mut row: MIB_IPFORWARD_ROW2 = std::mem::zeroed();
             InitializeIpForwardEntry(&mut row);
@@ -167,7 +169,7 @@ fn run_batched(subnets: &[String], gateway: &str, add: bool) -> usize {
             if ok { success += 1; }
         }
     }
-    log::info!("routing: done — {}/{} succeeded", success, valid.len() + success - success /* total */);
+    log::info!("routing: done — {}/{} succeeded", success, total);
     success
 }
 
