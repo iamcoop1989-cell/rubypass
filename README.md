@@ -53,8 +53,4 @@ cd rubypass
 cargo tauri build
 ```
 
----
 
-## Лицензия
-
-MIT
