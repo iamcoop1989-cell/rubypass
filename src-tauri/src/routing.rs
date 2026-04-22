@@ -1,7 +1,9 @@
 use std::process::Command;
-use std::sync::Mutex;
 
 // Prevents concurrent routing operations from spawning multiple elevated windows.
+#[cfg(target_os = "windows")]
+use std::sync::Mutex;
+#[cfg(target_os = "windows")]
 static ROUTING_LOCK: Mutex<()> = Mutex::new(());
 
 /// Validate that a string looks like an IPv4 address or CIDR — no shell metacharacters.
