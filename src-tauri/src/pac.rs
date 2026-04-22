@@ -2,15 +2,21 @@
 
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeSet;
-use std::net::Ipv4Addr;
+use std::io::{Read, Write};
+use std::net::{Ipv4Addr, SocketAddr, TcpListener, TcpStream, ToSocketAddrs};
 use std::path::PathBuf;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, Mutex, OnceLock};
+use std::thread;
+use std::time::Duration;
 use winreg::enums::HKEY_CURRENT_USER;
 use winreg::RegKey;
 
-const INTERNET_SETTINGS: &str =
-    r"Software\Microsoft\Windows\CurrentVersion\Internet Settings";
+const INTERNET_SETTINGS: &str = r"Software\Microsoft\Windows\CurrentVersion\Internet Settings";
 const SNAPSHOT_FILE: &str = "windows_proxy_snapshot.json";
 const PAC_FILE: &str = "rubypass.pac";
+const ROUTER_HOST: &str = "127.0.0.1";
+const ROUTER_PORT: u16 = 17890;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 struct ProxySnapshot {
@@ -32,20 +38,57 @@ struct Cidr {
     prefix: u8,
 }
 
+#[derive(Debug, Clone)]
+enum ProxyKind {
+    Http,
+    Socks5,
+}
+
+#[derive(Debug, Clone)]
+struct UpstreamProxy {
+    kind: ProxyKind,
+    host: String,
+    port: u16,
+}
+
+#[derive(Debug)]
+struct RouterHandle {
+    shutdown: Arc<AtomicBool>,
+    join: Option<thread::JoinHandle<()>>,
+}
+
+#[derive(Debug)]
+struct RouterState {
+    upstream: UpstreamProxy,
+    cidrs: Vec<Cidr>,
+}
+
+static ROUTER: OnceLock<Mutex<Option<RouterHandle>>> = OnceLock::new();
+
+impl UpstreamProxy {
+    fn to_pac_directive(&self) -> String {
+        match self.kind {
+            ProxyKind::Http => format!("PROXY {}:{}", self.host, self.port),
+            ProxyKind::Socks5 => format!("SOCKS {}:{}", self.host, self.port),
+        }
+    }
+}
+
 pub fn install(subnets: &[String]) -> Result<(), String> {
     let settings = read_proxy_settings()?;
     if settings.proxy_enable == 0 {
         log::info!("PAC skipped: system proxy is disabled");
         return Ok(());
     }
-    let Some(proxy) = proxy_for_pac(settings.proxy_server.as_deref()) else {
+    let Some(upstream) = proxy_for_router(settings.proxy_server.as_deref()) else {
         log::info!("PAC skipped: no static system proxy detected");
         return Ok(());
     };
 
     save_snapshot_once(&settings)?;
+    start_router(upstream.clone(), subnets)?;
 
-    let pac = generate_pac(&proxy, subnets);
+    let pac = generate_pac(&upstream);
     let pac_path = pac_path();
     std::fs::create_dir_all(pac_path.parent().unwrap()).map_err(|e| e.to_string())?;
     std::fs::write(&pac_path, pac).map_err(|e| e.to_string())?;
@@ -61,11 +104,17 @@ pub fn install(subnets: &[String]) -> Result<(), String> {
         .map_err(|e| e.to_string())?;
 
     refresh_wininet();
-    log::info!("PAC installed for proxy {proxy}");
+    log::info!(
+        "PAC installed for RuBypass router, upstream={}:{}",
+        upstream.host,
+        upstream.port
+    );
     Ok(())
 }
 
 pub fn restore() -> Result<(), String> {
+    stop_router();
+
     let path = snapshot_path();
     if !path.exists() {
         return Ok(());
@@ -140,7 +189,7 @@ fn save_snapshot_once(settings: &ProxySettings) -> Result<(), String> {
     std::fs::write(path, json).map_err(|e| e.to_string())
 }
 
-fn proxy_for_pac(proxy_server: Option<&str>) -> Option<String> {
+fn proxy_for_router(proxy_server: Option<&str>) -> Option<UpstreamProxy> {
     let raw = proxy_server?.trim();
     if raw.is_empty() {
         return None;
@@ -161,7 +210,7 @@ fn proxy_for_pac(proxy_server: Option<&str>) -> Option<String> {
     }
 }
 
-fn normalize_proxy(value: &str, socks: bool) -> Option<String> {
+fn normalize_proxy(value: &str, socks: bool) -> Option<UpstreamProxy> {
     let value = value
         .trim()
         .trim_start_matches("http://")
@@ -171,62 +220,364 @@ fn normalize_proxy(value: &str, socks: bool) -> Option<String> {
     if value.is_empty() {
         return None;
     }
-    if socks {
-        Some(format!("SOCKS {value}"))
-    } else {
-        Some(format!("PROXY {value}"))
-    }
+    let (host, port) = value.rsplit_once(':')?;
+    let port = port.parse().ok()?;
+    Some(UpstreamProxy {
+        kind: if socks {
+            ProxyKind::Socks5
+        } else {
+            ProxyKind::Http
+        },
+        host: host.trim_matches(['[', ']']).to_string(),
+        port,
+    })
 }
 
-fn generate_pac(proxy: &str, subnets: &[String]) -> String {
-    let cidrs = aggregate_subnets(subnets);
-    let mut checks = String::new();
-    for cidr in cidrs {
-        let net = Ipv4Addr::from(cidr.network);
-        let mask = Ipv4Addr::from(prefix_mask(cidr.prefix));
-        checks.push_str(&format!(
-            "      isInNet(ip, \"{}\", \"{}\") ||\n",
-            net, mask
-        ));
-    }
-
-    if checks.ends_with(" ||\n") {
-        checks.truncate(checks.len() - 4);
-        checks.push('\n');
-    }
-
-    let ip_block = if checks.is_empty() {
-        String::new()
-    } else {
-        format!(
-            r#"
-  var ip = dnsResolve(host);
-  if (ip && (
-{checks}  )) {{
-    return "DIRECT";
-  }}
-"#
-        )
-    };
-
+fn generate_pac(upstream: &UpstreamProxy) -> String {
+    let fallback = upstream.to_pac_directive();
     format!(
         r#"function FindProxyForURL(url, host) {{
-  host = host.toLowerCase();
-
-  if (dnsDomainIs(host, ".ru") ||
-      dnsDomainIs(host, ".su") ||
-      dnsDomainIs(host, ".рф") ||
-      dnsDomainIs(host, ".рус") ||
-      dnsDomainIs(host, ".москва") ||
-      dnsDomainIs(host, ".moscow")) {{
-    return "DIRECT";
-  }}
-{ip_block}
-
-  return "{proxy}";
+  return "PROXY {ROUTER_HOST}:{ROUTER_PORT}; {fallback}";
 }}
 "#
     )
+}
+
+fn start_router(upstream: UpstreamProxy, subnets: &[String]) -> Result<(), String> {
+    stop_router();
+
+    let listener = TcpListener::bind((ROUTER_HOST, ROUTER_PORT)).map_err(|e| e.to_string())?;
+    listener.set_nonblocking(true).map_err(|e| e.to_string())?;
+
+    let shutdown = Arc::new(AtomicBool::new(false));
+    let state = Arc::new(RouterState {
+        upstream,
+        cidrs: aggregate_subnets(subnets),
+    });
+    let thread_shutdown = Arc::clone(&shutdown);
+    let join = thread::spawn(move || {
+        while !thread_shutdown.load(Ordering::SeqCst) {
+            match listener.accept() {
+                Ok((stream, _)) => {
+                    let state = Arc::clone(&state);
+                    thread::spawn(move || {
+                        if let Err(e) = handle_client(stream, state) {
+                            log::debug!("proxy-router client failed: {e}");
+                        }
+                    });
+                }
+                Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => {
+                    thread::sleep(Duration::from_millis(50));
+                }
+                Err(e) => {
+                    log::warn!("proxy-router accept failed: {e}");
+                    thread::sleep(Duration::from_millis(250));
+                }
+            }
+        }
+    });
+
+    let mut router = ROUTER.get_or_init(|| Mutex::new(None)).lock().unwrap();
+    *router = Some(RouterHandle {
+        shutdown,
+        join: Some(join),
+    });
+    log::info!("proxy-router started on {ROUTER_HOST}:{ROUTER_PORT}");
+    Ok(())
+}
+
+fn stop_router() {
+    let Some(lock) = ROUTER.get() else { return };
+    let mut router = lock.lock().unwrap();
+    let Some(mut handle) = router.take() else {
+        return;
+    };
+    handle.shutdown.store(true, Ordering::SeqCst);
+    let _ = TcpStream::connect((ROUTER_HOST, ROUTER_PORT));
+    if let Some(join) = handle.join.take() {
+        let _ = join.join();
+    }
+    log::info!("proxy-router stopped");
+}
+
+fn handle_client(mut client: TcpStream, state: Arc<RouterState>) -> Result<(), String> {
+    let request = read_http_head(&mut client)?;
+    let head = String::from_utf8_lossy(&request);
+    let mut lines = head.lines();
+    let first_line = lines.next().ok_or_else(|| "empty request".to_string())?;
+
+    if let Some(authority) = first_line
+        .strip_prefix("CONNECT ")
+        .and_then(|s| s.split_whitespace().next())
+    {
+        let target = parse_authority(authority, 443)?;
+        if should_direct(&target.host, &state) {
+            let upstream = TcpStream::connect((target.host.as_str(), target.port))
+                .map_err(|e| e.to_string())?;
+            client
+                .write_all(b"HTTP/1.1 200 Connection Established\r\n\r\n")
+                .map_err(|e| e.to_string())?;
+            tunnel(client, upstream);
+        } else {
+            match state.upstream.kind {
+                ProxyKind::Http => {
+                    let mut upstream = connect_upstream(&state.upstream)?;
+                    upstream.write_all(&request).map_err(|e| e.to_string())?;
+                    tunnel(client, upstream);
+                }
+                ProxyKind::Socks5 => {
+                    let upstream = connect_socks5(&state.upstream, &target.host, target.port)?;
+                    client
+                        .write_all(b"HTTP/1.1 200 Connection Established\r\n\r\n")
+                        .map_err(|e| e.to_string())?;
+                    tunnel(client, upstream);
+                }
+            }
+        }
+        return Ok(());
+    }
+
+    let target = parse_plain_http_target(first_line, &head)?;
+    if should_direct(&target.host, &state) {
+        let mut upstream =
+            TcpStream::connect((target.host.as_str(), target.port)).map_err(|e| e.to_string())?;
+        upstream
+            .write_all(&rewrite_absolute_form(&request, &target.host))
+            .map_err(|e| e.to_string())?;
+        tunnel(client, upstream);
+    } else {
+        match state.upstream.kind {
+            ProxyKind::Http => {
+                let mut upstream = connect_upstream(&state.upstream)?;
+                upstream.write_all(&request).map_err(|e| e.to_string())?;
+                tunnel(client, upstream);
+            }
+            ProxyKind::Socks5 => {
+                let mut upstream = connect_socks5(&state.upstream, &target.host, target.port)?;
+                upstream
+                    .write_all(&rewrite_absolute_form(&request, &target.host))
+                    .map_err(|e| e.to_string())?;
+                tunnel(client, upstream);
+            }
+        }
+    }
+
+    Ok(())
+}
+
+fn read_http_head(stream: &mut TcpStream) -> Result<Vec<u8>, String> {
+    let mut buf = Vec::with_capacity(4096);
+    let mut chunk = [0u8; 1024];
+    loop {
+        let read = stream.read(&mut chunk).map_err(|e| e.to_string())?;
+        if read == 0 {
+            return Err("connection closed before request head".to_string());
+        }
+        buf.extend_from_slice(&chunk[..read]);
+        if buf.windows(4).any(|w| w == b"\r\n\r\n") {
+            return Ok(buf);
+        }
+        if buf.len() > 64 * 1024 {
+            return Err("request head is too large".to_string());
+        }
+    }
+}
+
+#[derive(Debug)]
+struct Target {
+    host: String,
+    port: u16,
+}
+
+fn parse_authority(authority: &str, default_port: u16) -> Result<Target, String> {
+    if let Some((host, port)) = authority.rsplit_once(':') {
+        let port = port
+            .parse()
+            .map_err(|_| "invalid target port".to_string())?;
+        Ok(Target {
+            host: host.trim_matches(['[', ']']).to_string(),
+            port,
+        })
+    } else {
+        Ok(Target {
+            host: authority.to_string(),
+            port: default_port,
+        })
+    }
+}
+
+fn parse_plain_http_target(first_line: &str, head: &str) -> Result<Target, String> {
+    let url = first_line
+        .split_whitespace()
+        .nth(1)
+        .ok_or_else(|| "missing request target".to_string())?;
+    if let Some(rest) = url.strip_prefix("http://") {
+        let authority = rest.split('/').next().unwrap_or(rest);
+        return parse_authority(authority, 80);
+    }
+
+    for line in head.lines() {
+        if let Some(host) = line
+            .strip_prefix("Host:")
+            .or_else(|| line.strip_prefix("host:"))
+        {
+            return parse_authority(host.trim(), 80);
+        }
+    }
+
+    Err("missing Host header".to_string())
+}
+
+fn rewrite_absolute_form(request: &[u8], host: &str) -> Vec<u8> {
+    let text = String::from_utf8_lossy(request);
+    let Some(first_line_end) = text.find("\r\n") else {
+        return request.to_vec();
+    };
+    let first = &text[..first_line_end];
+    let mut parts = first.split_whitespace();
+    let Some(method) = parts.next() else {
+        return request.to_vec();
+    };
+    let Some(url) = parts.next() else {
+        return request.to_vec();
+    };
+    let Some(version) = parts.next() else {
+        return request.to_vec();
+    };
+
+    let Some(rest) = url.strip_prefix("http://") else {
+        return request.to_vec();
+    };
+    let path_start = rest.find('/').unwrap_or(rest.len());
+    let path = if path_start < rest.len() {
+        &rest[path_start..]
+    } else {
+        "/"
+    };
+
+    let rewritten = format!(
+        "{method} {path} {version}\r\n{}",
+        &text[first_line_end + 2..]
+    );
+    if rewritten.contains("\r\nHost:") || rewritten.contains("\r\nhost:") {
+        rewritten.into_bytes()
+    } else {
+        let insert = format!("{method} {path} {version}\r\nHost: {host}\r\n");
+        format!("{insert}{}", &text[first_line_end + 2..]).into_bytes()
+    }
+}
+
+fn should_direct(host: &str, state: &RouterState) -> bool {
+    let host = host.trim_end_matches('.').to_lowercase();
+    if host.ends_with(".ru")
+        || host.ends_with(".su")
+        || host.ends_with(".рф")
+        || host.ends_with(".рус")
+        || host.ends_with(".москва")
+        || host.ends_with(".moscow")
+    {
+        return true;
+    }
+
+    if let Ok(ip) = host.parse::<Ipv4Addr>() {
+        return cidr_contains_any(u32::from(ip), &state.cidrs);
+    }
+
+    resolve_ipv4(&host)
+        .map(|ip| cidr_contains_any(u32::from(ip), &state.cidrs))
+        .unwrap_or(false)
+}
+
+fn resolve_ipv4(host: &str) -> Option<Ipv4Addr> {
+    (host, 0)
+        .to_socket_addrs()
+        .ok()?
+        .find_map(|addr| match addr {
+            SocketAddr::V4(v4) => Some(*v4.ip()),
+            SocketAddr::V6(_) => None,
+        })
+}
+
+fn cidr_contains_any(ip: u32, cidrs: &[Cidr]) -> bool {
+    cidrs
+        .iter()
+        .any(|cidr| (ip & prefix_mask(cidr.prefix)) == cidr.network)
+}
+
+fn connect_upstream(proxy: &UpstreamProxy) -> Result<TcpStream, String> {
+    TcpStream::connect((proxy.host.as_str(), proxy.port)).map_err(|e| e.to_string())
+}
+
+fn connect_socks5(
+    proxy: &UpstreamProxy,
+    target_host: &str,
+    target_port: u16,
+) -> Result<TcpStream, String> {
+    let mut stream = connect_upstream(proxy)?;
+    stream
+        .write_all(&[0x05, 0x01, 0x00])
+        .map_err(|e| e.to_string())?;
+    let mut response = [0u8; 2];
+    stream
+        .read_exact(&mut response)
+        .map_err(|e| e.to_string())?;
+    if response != [0x05, 0x00] {
+        return Err("SOCKS5 upstream rejected no-auth handshake".to_string());
+    }
+
+    let host = target_host.as_bytes();
+    if host.len() > u8::MAX as usize {
+        return Err("SOCKS5 target host is too long".to_string());
+    }
+    let mut request = Vec::with_capacity(7 + host.len());
+    request.extend_from_slice(&[0x05, 0x01, 0x00, 0x03, host.len() as u8]);
+    request.extend_from_slice(host);
+    request.extend_from_slice(&target_port.to_be_bytes());
+    stream.write_all(&request).map_err(|e| e.to_string())?;
+
+    let mut head = [0u8; 4];
+    stream.read_exact(&mut head).map_err(|e| e.to_string())?;
+    if head[1] != 0x00 {
+        return Err(format!("SOCKS5 connect failed: {}", head[1]));
+    }
+    match head[3] {
+        0x01 => {
+            let mut rest = [0u8; 6];
+            stream.read_exact(&mut rest).map_err(|e| e.to_string())?;
+        }
+        0x03 => {
+            let mut len = [0u8; 1];
+            stream.read_exact(&mut len).map_err(|e| e.to_string())?;
+            let mut rest = vec![0u8; len[0] as usize + 2];
+            stream.read_exact(&mut rest).map_err(|e| e.to_string())?;
+        }
+        0x04 => {
+            let mut rest = [0u8; 18];
+            stream.read_exact(&mut rest).map_err(|e| e.to_string())?;
+        }
+        _ => return Err("SOCKS5 returned unknown address type".to_string()),
+    }
+    Ok(stream)
+}
+
+fn tunnel(a: TcpStream, b: TcpStream) {
+    let Ok(mut a_read) = a.try_clone() else {
+        return;
+    };
+    let Ok(mut b_read) = b.try_clone() else {
+        return;
+    };
+    let mut a_write = a;
+    let mut b_write = b;
+
+    let left = thread::spawn(move || {
+        let _ = std::io::copy(&mut a_read, &mut b_write);
+    });
+    let right = thread::spawn(move || {
+        let _ = std::io::copy(&mut b_read, &mut a_write);
+    });
+    let _ = left.join();
+    let _ = right.join();
 }
 
 fn aggregate_subnets(subnets: &[String]) -> Vec<Cidr> {
