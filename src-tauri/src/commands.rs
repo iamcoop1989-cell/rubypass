@@ -147,7 +147,7 @@ pub fn set_update_schedule(
 /// Remove every route we may have installed, regardless of current bypass state.
 /// Useful after crashes or repeated testing left stale routes behind.
 #[tauri::command]
-pub async fn clear_all_routes(app: AppHandle, state: State<'_, AppState>) -> Result<usize, String> {
+pub async fn clear_all_routes(app: AppHandle, _state: State<'_, AppState>) -> Result<usize, String> {
     let app2 = app.clone();
     tokio::task::spawn_blocking(move || {
         let state2 = app2.state::<AppState>();
@@ -161,6 +161,8 @@ pub async fn clear_all_routes(app: AppHandle, state: State<'_, AppState>) -> Res
         }
         let live = crate::routing::routes_via_gateway(&gateway);
         let removed = crate::routing::remove_routes(&live, &gateway);
+        #[cfg(target_os = "windows")]
+        let _ = crate::pac::restore();
         // Mark as disabled since all routes are gone.
         let mut inner = state2.0.lock().unwrap();
         inner.config.bypass_enabled = false;
@@ -202,6 +204,11 @@ pub fn enable_bypass_inner(app: &AppHandle, state: &State<AppState>) -> Result<(
         ));
     }
 
+    #[cfg(target_os = "windows")]
+    if let Err(e) = crate::pac::install(&subnets) {
+        log::warn!("PAC install failed: {e}");
+    }
+
     let mut inner = state.0.lock().unwrap();
     inner.config.bypass_enabled = true;
     config::save(&inner.config)?;
@@ -222,6 +229,10 @@ pub fn disable_bypass_inner(app: &AppHandle, state: &State<AppState>) -> Result<
     };
 
     routing::remove_routes(&subnets, &gateway);
+    #[cfg(target_os = "windows")]
+    if let Err(e) = crate::pac::restore() {
+        log::warn!("PAC restore failed: {e}");
+    }
 
     let mut inner = state.0.lock().unwrap();
     inner.config.bypass_enabled = false;

@@ -6,6 +6,8 @@ mod gateway;
 #[cfg(any(target_os = "macos", target_os = "linux"))]
 mod helper;
 mod network_watch;
+#[cfg(target_os = "windows")]
+mod pac;
 mod routing;
 mod scheduler;
 mod status;
@@ -128,6 +130,8 @@ fn setup_tray(app: &mut tauri::App) -> tauri::Result<()> {
                             "Просто выйти".to_string(),
                         ))
                         .show(move |clear| {
+                            #[cfg(target_os = "windows")]
+                            let _ = pac::restore();
                             if clear {
                                 let state = app2.state::<AppState>();
                                 let _ = commands::disable_bypass_inner(&app2, &state);
@@ -135,6 +139,8 @@ fn setup_tray(app: &mut tauri::App) -> tauri::Result<()> {
                             app2.exit(0);
                         });
                 } else {
+                    #[cfg(target_os = "windows")]
+                    let _ = pac::restore();
                     app.exit(0);
                 }
             }
