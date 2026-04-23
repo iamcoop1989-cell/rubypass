@@ -180,42 +180,46 @@ pub fn restore() -> Result<(), String> {
     stop_router();
 
     let path = snapshot_path();
-    if !path.exists() {
-        return Ok(());
-    }
-
-    let Some(snapshot) = read_snapshot()? else {
-        return Ok(());
-    };
+    let pac_url = file_url(&pac_path());
+    let snapshot = read_snapshot()?;
 
     let hkcu = RegKey::predef(HKEY_CURRENT_USER);
     let key = hkcu
         .open_subkey_with_flags(INTERNET_SETTINGS, winreg::enums::KEY_WRITE)
         .map_err(|e| e.to_string())?;
 
-    match snapshot.proxy_enable {
-        Some(value) => key
-            .set_value("ProxyEnable", &value)
-            .map_err(|e| e.to_string())?,
-        None => {
-            let _: Result<(), _> = key.delete_value("ProxyEnable");
+    if let Some(snapshot) = snapshot {
+        match snapshot.proxy_enable {
+            Some(value) => key
+                .set_value("ProxyEnable", &value)
+                .map_err(|e| e.to_string())?,
+            None => {
+                let _: Result<(), _> = key.delete_value("ProxyEnable");
+            }
         }
-    }
-    match snapshot.proxy_server {
-        Some(value) => key
-            .set_value("ProxyServer", &value)
-            .map_err(|e| e.to_string())?,
-        None => {
-            let _: Result<(), _> = key.delete_value("ProxyServer");
+        match snapshot.proxy_server {
+            Some(value) => key
+                .set_value("ProxyServer", &value)
+                .map_err(|e| e.to_string())?,
+            None => {
+                let _: Result<(), _> = key.delete_value("ProxyServer");
+            }
         }
-    }
-    match snapshot.auto_config_url {
-        Some(value) => key
-            .set_value("AutoConfigURL", &value)
-            .map_err(|e| e.to_string())?,
-        None => {
-            let _: Result<(), _> = key.delete_value("AutoConfigURL");
+        match snapshot.auto_config_url {
+            Some(value) => key
+                .set_value("AutoConfigURL", &value)
+                .map_err(|e| e.to_string())?,
+            None => {
+                let _: Result<(), _> = key.delete_value("AutoConfigURL");
+            }
         }
+    } else if read_proxy_settings()?.auto_config_url.as_deref() == Some(pac_url.as_str()) {
+        let _: Result<(), _> = key.delete_value("AutoConfigURL");
+        log::warn!("PAC snapshot was missing; removed RuBypass AutoConfigURL only");
+    } else {
+        let _ = std::fs::remove_file(pac_path());
+        refresh_wininet();
+        return Ok(());
     }
 
     let _ = std::fs::remove_file(path);

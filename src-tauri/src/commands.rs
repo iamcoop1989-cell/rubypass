@@ -163,7 +163,8 @@ pub async fn clear_all_routes(app: AppHandle, _state: State<'_, AppState>) -> Re
         let state2 = app2.state::<AppState>();
         let gateway = {
             let inner = state2.0.lock().unwrap();
-            inner.config.gateway_override.clone()
+            inner.config.active_gateway.clone()
+                .or_else(|| inner.config.gateway_override.clone())
                 .unwrap_or_else(|| crate::gateway::detect().unwrap_or_default())
         };
         if gateway.is_empty() {
@@ -176,6 +177,7 @@ pub async fn clear_all_routes(app: AppHandle, _state: State<'_, AppState>) -> Re
         // Mark as disabled since all routes are gone.
         let mut inner = state2.0.lock().unwrap();
         inner.config.bypass_enabled = false;
+        inner.config.active_gateway = None;
         let _ = config::save(&inner.config);
         set_tray_icon(&app2, TrayState::Inactive);
         Ok(removed)
@@ -228,6 +230,7 @@ pub fn enable_bypass_inner(app: &AppHandle, state: &State<AppState>) -> Result<(
 
     let mut inner = state.0.lock().unwrap();
     inner.config.bypass_enabled = true;
+    inner.config.active_gateway = Some(gateway);
     config::save(&inner.config)?;
     stop_spinner();
     set_tray_icon(app, TrayState::Active);
@@ -239,7 +242,8 @@ pub fn disable_bypass_inner(app: &AppHandle, state: &State<AppState>) -> Result<
 
     let (subnets, gateway) = {
         let mut inner = state.0.lock().unwrap();
-        let gw = inner.config.gateway_override.clone()
+        let gw = inner.config.active_gateway.clone()
+            .or_else(|| inner.config.gateway_override.clone())
             .unwrap_or_else(|| crate::gateway::detect().unwrap_or_default());
         let subnets = load_subnets_cached(&mut inner).unwrap_or_default();
         (subnets, gw)
@@ -253,6 +257,7 @@ pub fn disable_bypass_inner(app: &AppHandle, state: &State<AppState>) -> Result<
 
     let mut inner = state.0.lock().unwrap();
     inner.config.bypass_enabled = false;
+    inner.config.active_gateway = None;
     config::save(&inner.config)?;
     stop_spinner();
     set_tray_icon(app, TrayState::Inactive);
@@ -282,6 +287,12 @@ pub fn reapply_bypass_inner(
     }
 
     routing::change_routes(&subnets, old_gateway, &new_gateway);
+
+    {
+        let mut inner = state.0.lock().unwrap();
+        inner.config.active_gateway = Some(new_gateway);
+        config::save(&inner.config)?;
+    }
 
     stop_spinner();
     set_tray_icon(app, TrayState::Active);

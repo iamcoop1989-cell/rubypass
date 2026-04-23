@@ -11,6 +11,8 @@ pub struct Config {
     pub update_schedule: UpdateSchedule,
     pub last_updated: Option<String>,  // ISO 8601
     pub gateway_override: Option<String>,
+    #[serde(default)]
+    pub active_gateway: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -31,6 +33,7 @@ impl Default for Config {
             update_schedule: UpdateSchedule::Weekly,
             last_updated: None,
             gateway_override: None,
+            active_gateway: None,
         }
     }
 }

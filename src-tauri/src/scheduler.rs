@@ -71,6 +71,7 @@ mod tests {
             update_schedule: schedule,
             last_updated: last.map(str::to_string),
             gateway_override: None,
+            active_gateway: None,
         }
     }
 
