@@ -6,6 +6,8 @@ use std::path::PathBuf;
 pub struct Config {
     pub bypass_enabled: bool,
     pub autostart: bool,
+    #[serde(default)]
+    pub windows_proxy_alpha_enabled: bool,
     pub update_schedule: UpdateSchedule,
     pub last_updated: Option<String>,  // ISO 8601
     pub gateway_override: Option<String>,
@@ -25,6 +27,7 @@ impl Default for Config {
         Self {
             bypass_enabled: false,
             autostart: false,
+            windows_proxy_alpha_enabled: false,
             update_schedule: UpdateSchedule::Weekly,
             last_updated: None,
             gateway_override: None,
@@ -84,6 +87,7 @@ mod tests {
         let (_dir, _guard) = temp_home();
         let cfg = load();
         assert!(!cfg.bypass_enabled);
+        assert!(!cfg.windows_proxy_alpha_enabled);
         assert_eq!(cfg.update_schedule, UpdateSchedule::Weekly);
     }
 
@@ -93,11 +97,13 @@ mod tests {
         let mut cfg = Config::default();
         cfg.bypass_enabled = true;
         cfg.autostart = true;
+        cfg.windows_proxy_alpha_enabled = true;
         save(&cfg).unwrap();
 
         let reloaded = load();
         assert!(reloaded.bypass_enabled);
         assert!(reloaded.autostart);
+        assert!(reloaded.windows_proxy_alpha_enabled);
     }
 
     #[test]

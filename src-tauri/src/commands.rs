@@ -144,6 +144,11 @@ pub fn set_update_schedule(
     config::save(&inner.config)
 }
 
+#[tauri::command]
+pub fn toggle_windows_proxy_alpha(app: AppHandle, state: State<AppState>) -> Result<bool, String> {
+    toggle_windows_proxy_alpha_inner(&app, &state)
+}
+
 /// Remove every route we may have installed, regardless of current bypass state.
 /// Useful after crashes or repeated testing left stale routes behind.
 #[tauri::command]
@@ -206,10 +211,14 @@ pub fn enable_bypass_inner(app: &AppHandle, state: &State<AppState>) -> Result<(
 
     #[cfg(target_os = "windows")]
     {
-        // Hotfix: the Windows PAC/proxy-router layer is disabled until it is
-        // validated against real VPN clients. Keep route-based bypass active
-        // and keep restore() on disable/exit to clean up older test builds.
-        log::info!("Windows PAC/proxy-router layer is disabled by hotfix");
+        let alpha_enabled = state.0.lock().unwrap().config.windows_proxy_alpha_enabled;
+        if alpha_enabled {
+            if let Err(e) = crate::pac::install(&subnets) {
+                log::warn!("PAC alpha install failed: {e}");
+            }
+        } else {
+            log::info!("Windows PAC/proxy-router alpha is disabled");
+        }
     }
 
     let mut inner = state.0.lock().unwrap();
@@ -272,6 +281,73 @@ pub fn reapply_bypass_inner(
     stop_spinner();
     set_tray_icon(app, TrayState::Active);
     Ok(())
+}
+
+#[cfg(target_os = "windows")]
+pub fn sync_windows_proxy_inner(app: &AppHandle, state: &State<AppState>) -> Result<(), String> {
+    start_spinner(app.clone());
+
+    let maybe_subnets = {
+        let mut inner = state.0.lock().unwrap();
+        if !inner.config.windows_proxy_alpha_enabled {
+            None
+        } else {
+            Some(load_subnets_cached(&mut inner)?)
+        }
+    };
+
+    let result = if let Some(subnets) = maybe_subnets {
+        crate::pac::sync(&subnets)
+    } else {
+        Ok(())
+    };
+
+    stop_spinner();
+    set_tray_icon(app, TrayState::Active);
+    result
+}
+
+#[cfg(target_os = "windows")]
+fn toggle_windows_proxy_alpha_inner(
+    _app: &AppHandle,
+    state: &State<AppState>,
+) -> Result<bool, String> {
+    let (enable, subnets) = {
+        let mut inner = state.0.lock().unwrap();
+        let enable = !inner.config.windows_proxy_alpha_enabled;
+        if enable && !inner.config.bypass_enabled {
+            return Err("Сначала включите RuBypass".to_string());
+        }
+        let subnets = if enable {
+            Some(load_subnets_cached(&mut inner)?)
+        } else {
+            None
+        };
+        inner.config.windows_proxy_alpha_enabled = enable;
+        config::save(&inner.config)?;
+        (enable, subnets)
+    };
+
+    if enable {
+        if let Err(e) = crate::pac::install(subnets.as_deref().unwrap_or(&[])) {
+            let mut inner = state.0.lock().unwrap();
+            inner.config.windows_proxy_alpha_enabled = false;
+            let _ = config::save(&inner.config);
+            return Err(e);
+        }
+    } else {
+        crate::pac::restore()?;
+    }
+
+    Ok(enable)
+}
+
+#[cfg(not(target_os = "windows"))]
+fn toggle_windows_proxy_alpha_inner(
+    _app: &AppHandle,
+    _state: &State<AppState>,
+) -> Result<bool, String> {
+    Err("Proxy-router alpha доступен только на Windows".to_string())
 }
 
 // ── tray icon ────────────────────────────────────────────────────────────────

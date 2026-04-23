@@ -3,6 +3,7 @@ const { invoke } = window.__TAURI__.core;
 const { listen } = window.__TAURI__.event;
 
 let autostartEnabled = false;
+let proxyAlphaEnabled = false;
 
 async function refresh() {
   try {
@@ -11,6 +12,7 @@ async function refresh() {
       invoke('get_config'),
     ]);
     autostartEnabled = config.autostart;
+    proxyAlphaEnabled = !!config.windows_proxy_alpha_enabled;
     renderStatus(status, config);
   } catch (e) {
     showToast('Ошибка получения статуса: ' + e, true);
@@ -66,6 +68,9 @@ function renderStatus(status, config) {
 
   const ab = document.getElementById('autostart-btn');
   ab.className = 'toggle-small' + (config.autostart ? ' on' : '');
+
+  const proxyAlpha = document.getElementById('proxy-alpha-btn');
+  proxyAlpha.className = 'toggle-small alpha' + (config.windows_proxy_alpha_enabled ? ' on' : '');
 }
 
 function showLoading(title) {
@@ -149,6 +154,22 @@ async function toggleAutostart() {
   } catch (e) {
     showToast(String(e), true);
     autostartEnabled = !autostartEnabled;
+  }
+}
+
+async function toggleProxyAlpha() {
+  const btn = document.getElementById('proxy-alpha-btn');
+  btn.disabled = true;
+  try {
+    proxyAlphaEnabled = await invoke('toggle_windows_proxy_alpha');
+    btn.className = 'toggle-small alpha' + (proxyAlphaEnabled ? ' on' : '');
+    showToast(proxyAlphaEnabled ? 'Proxy-router alpha включен' : 'Proxy-router alpha выключен');
+    await refresh();
+  } catch (e) {
+    showToast(String(e), true);
+    await refresh();
+  } finally {
+    btn.disabled = false;
   }
 }
 

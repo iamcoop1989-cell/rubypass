@@ -144,6 +144,21 @@ body::-webkit-scrollbar-thumb { background: #2a2a3e; border-radius: 2px; }
   display: flex; align-items: center; justify-content: space-between;
 }
 .setting-label { color: #9ca3af; font-size: 12px; }
+.setting-copy { display: flex; flex-direction: column; gap: 3px; min-width: 0; }
+.setting-hint { color: #6b7280; font-size: 10px; line-height: 1.2; }
+.alpha-badge {
+  display: inline-flex;
+  align-items: center;
+  height: 15px;
+  padding: 0 5px;
+  border-radius: 5px;
+  background: #3a2a14;
+  color: #f59e0b;
+  font-size: 9px;
+  font-weight: 700;
+  text-transform: uppercase;
+  vertical-align: 1px;
+}
 .toggle-small {
   width: 36px; height: 20px;
   border-radius: 10px;
@@ -152,6 +167,8 @@ body::-webkit-scrollbar-thumb { background: #2a2a3e; border-radius: 2px; }
   border: none; transition: background 0.2s;
 }
 .toggle-small.on { background: #3b82f6; }
+.toggle-small.alpha.on { background: #f59e0b; }
+.toggle-small:disabled { opacity: 0.5; cursor: not-allowed; }
 .toggle-small::after {
   content: '';
   width: 16px; height: 16px;

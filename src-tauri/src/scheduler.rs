@@ -67,6 +67,7 @@ mod tests {
         Config {
             bypass_enabled: false,
             autostart: false,
+            windows_proxy_alpha_enabled: false,
             update_schedule: schedule,
             last_updated: last.map(str::to_string),
             gateway_override: None,

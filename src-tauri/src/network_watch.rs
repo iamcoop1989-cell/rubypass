@@ -10,14 +10,35 @@ pub fn start(app: AppHandle) {
 
 fn poll_loop(app: AppHandle) {
     let mut last_gateway = crate::gateway::detect().ok();
+    #[cfg(target_os = "windows")]
+    let mut last_proxy_signature = crate::pac::proxy_signature();
     // Debounce: don't reapply routes more than once per 30 seconds.
     // On Windows, DHCP init causes many rapid gateway changes at startup.
     let mut last_reapply = Instant::now() - Duration::from_secs(60);
+    #[cfg(target_os = "windows")]
+    let mut last_proxy_sync = Instant::now() - Duration::from_secs(60);
 
     loop {
         std::thread::sleep(Duration::from_secs(10));
 
         let current_gateway = crate::gateway::detect().ok();
+        #[cfg(target_os = "windows")]
+        {
+            let current_proxy_signature = crate::pac::proxy_signature();
+            if current_proxy_signature != last_proxy_signature {
+                log::info!("Windows proxy settings changed");
+                last_proxy_signature = current_proxy_signature;
+
+                if last_proxy_sync.elapsed() >= Duration::from_secs(10) {
+                    last_proxy_sync = Instant::now();
+                    std::thread::sleep(Duration::from_secs(2));
+                    handle_proxy_change(&app);
+                    last_proxy_signature = crate::pac::proxy_signature();
+                } else {
+                    log::info!("Windows proxy sync debounced (last sync was <10s ago)");
+                }
+            }
+        }
 
         if current_gateway != last_gateway {
             log::info!(
@@ -62,6 +83,36 @@ fn handle_network_change(app: &AppHandle, old_gateway: Option<String>) {
 
     if let Err(e) = result {
         log::warn!("Failed to reapply routes: {}", e);
+    }
+
+    #[cfg(target_os = "windows")]
+    if let Err(e) = crate::commands::sync_windows_proxy_inner(app, &state) {
+        log::warn!("Failed to sync PAC alpha after network change: {}", e);
+    }
+
+    let _ = app.emit("network-changed", ());
+}
+
+#[cfg(target_os = "windows")]
+fn handle_proxy_change(app: &AppHandle) {
+    use crate::commands::AppState;
+
+    let state = app.state::<AppState>();
+    let (bypass_enabled, proxy_alpha_enabled) = {
+        let inner = state.0.lock().unwrap();
+        (
+            inner.config.bypass_enabled,
+            inner.config.windows_proxy_alpha_enabled,
+        )
+    };
+
+    if !bypass_enabled || !proxy_alpha_enabled {
+        return;
+    }
+
+    log::info!("Windows proxy changed, syncing RuBypass PAC alpha");
+    if let Err(e) = crate::commands::sync_windows_proxy_inner(app, &state) {
+        log::warn!("Failed to sync PAC alpha after Windows proxy change: {}", e);
     }
 
     let _ = app.emit("network-changed", ());
