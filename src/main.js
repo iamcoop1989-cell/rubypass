@@ -71,6 +71,18 @@ function renderStatus(status, config) {
 
   const proxyAlpha = document.getElementById('proxy-alpha-btn');
   proxyAlpha.className = 'toggle-small alpha' + (config.windows_proxy_alpha_enabled ? ' on' : '');
+
+  const proxyDiag = document.getElementById('proxy-alpha-diag');
+  if (status.proxy_router) {
+    const state = status.proxy_router.active ? 'активен' : 'не активен';
+    proxyDiag.textContent =
+      state + ' · DIRECT ' + status.proxy_router.direct_count +
+      ' · VPN ' + status.proxy_router.vpn_count;
+    proxyDiag.title = status.proxy_router.last_decisions.join('\n');
+  } else {
+    proxyDiag.textContent = 'Только Windows';
+    proxyDiag.title = '';
+  }
 }
 
 function showLoading(title) {

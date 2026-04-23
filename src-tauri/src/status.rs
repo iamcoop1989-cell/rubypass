@@ -10,6 +10,15 @@ pub struct AppStatus {
     pub vpn_interface: Option<String>,
     pub last_updated: Option<String>,
     pub bypass_enabled: bool,
+    pub proxy_router: Option<ProxyRouterStatus>,
+}
+
+#[derive(Debug, Serialize, Clone)]
+pub struct ProxyRouterStatus {
+    pub active: bool,
+    pub direct_count: u64,
+    pub vpn_count: u64,
+    pub last_decisions: Vec<String>,
 }
 
 pub fn collect(bypass_enabled: bool, last_updated: Option<String>) -> AppStatus {
@@ -27,7 +36,24 @@ pub fn collect(bypass_enabled: bool, last_updated: Option<String>) -> AppStatus 
         vpn_interface,
         last_updated,
         bypass_enabled,
+        proxy_router: proxy_router_status(),
     }
+}
+
+#[cfg(target_os = "windows")]
+fn proxy_router_status() -> Option<ProxyRouterStatus> {
+    let diagnostics = crate::pac::diagnostics();
+    Some(ProxyRouterStatus {
+        active: diagnostics.active,
+        direct_count: diagnostics.direct_count,
+        vpn_count: diagnostics.vpn_count,
+        last_decisions: diagnostics.last_decisions,
+    })
+}
+
+#[cfg(not(target_os = "windows"))]
+fn proxy_router_status() -> Option<ProxyRouterStatus> {
+    None
 }
 
 fn count_active_routes() -> usize {

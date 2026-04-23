@@ -5,7 +5,7 @@ use std::collections::BTreeSet;
 use std::io::{Read, Write};
 use std::net::{Ipv4Addr, TcpListener, TcpStream};
 use std::path::PathBuf;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, OnceLock};
 use std::thread;
 use std::time::Duration;
@@ -63,7 +63,24 @@ struct RouterState {
     cidrs: Vec<Cidr>,
 }
 
+#[derive(Debug, Clone, Serialize)]
+pub struct PacDiagnostics {
+    pub active: bool,
+    pub direct_count: u64,
+    pub vpn_count: u64,
+    pub proxy_signature: String,
+    pub last_decisions: Vec<String>,
+}
+
+#[derive(Debug, Default)]
+struct RouterMetrics {
+    direct_count: AtomicU64,
+    vpn_count: AtomicU64,
+    last_decisions: Mutex<Vec<String>>,
+}
+
 static ROUTER: OnceLock<Mutex<Option<RouterHandle>>> = OnceLock::new();
+static METRICS: OnceLock<RouterMetrics> = OnceLock::new();
 
 impl UpstreamProxy {
     fn to_pac_directive(&self) -> String {
@@ -77,12 +94,14 @@ impl UpstreamProxy {
 pub fn install(subnets: &[String]) -> Result<(), String> {
     let settings = read_proxy_settings()?;
     if settings.proxy_enable == 0 {
-        log::info!("PAC skipped: system proxy is disabled");
-        return Ok(());
+        let pac_url = file_url(&pac_path());
+        if settings.auto_config_url.as_deref() == Some(pac_url.as_str()) {
+            return sync(subnets);
+        }
+        return Err("Системный proxy VPN не обнаружен".to_string());
     }
     let Some(upstream) = proxy_for_router(settings.proxy_server.as_deref()) else {
-        log::info!("PAC skipped: no static system proxy detected");
-        return Ok(());
+        return Err("Статический proxy VPN не обнаружен".to_string());
     };
 
     save_snapshot_once(&settings)?;
@@ -133,6 +152,27 @@ pub fn proxy_signature() -> String {
             settings.auto_config_url.unwrap_or_default()
         ),
         Err(e) => format!("error={e}"),
+    }
+}
+
+pub fn diagnostics() -> PacDiagnostics {
+    let active = ROUTER
+        .get()
+        .and_then(|lock| lock.lock().ok().map(|router| router.is_some()))
+        .unwrap_or(false);
+    let metrics = METRICS.get_or_init(RouterMetrics::default);
+    let last_decisions = metrics
+        .last_decisions
+        .lock()
+        .map(|items| items.clone())
+        .unwrap_or_default();
+
+    PacDiagnostics {
+        active,
+        direct_count: metrics.direct_count.load(Ordering::Relaxed),
+        vpn_count: metrics.vpn_count.load(Ordering::Relaxed),
+        proxy_signature: proxy_signature(),
+        last_decisions,
     }
 }
 
@@ -316,6 +356,7 @@ fn install_router_pac(upstream: UpstreamProxy, subnets: &[String]) -> Result<(),
 
 fn start_router(upstream: UpstreamProxy, subnets: &[String]) -> Result<(), String> {
     stop_router();
+    reset_metrics();
 
     let listener = TcpListener::bind((ROUTER_HOST, ROUTER_PORT)).map_err(|e| e.to_string())?;
     listener.set_nonblocking(true).map_err(|e| e.to_string())?;
@@ -382,7 +423,9 @@ fn handle_client(mut client: TcpStream, state: Arc<RouterState>) -> Result<(), S
         .and_then(|s| s.split_whitespace().next())
     {
         let target = parse_authority(authority, 443)?;
-        if should_direct(&target.host, &state) {
+        let direct = should_direct(&target.host, &state);
+        record_decision(&target.host, direct);
+        if direct {
             let upstream = TcpStream::connect((target.host.as_str(), target.port))
                 .map_err(|e| e.to_string())?;
             client
@@ -409,7 +452,9 @@ fn handle_client(mut client: TcpStream, state: Arc<RouterState>) -> Result<(), S
     }
 
     let target = parse_plain_http_target(first_line, &head)?;
-    if should_direct(&target.host, &state) {
+    let direct = should_direct(&target.host, &state);
+    record_decision(&target.host, direct);
+    if direct {
         let mut upstream =
             TcpStream::connect((target.host.as_str(), target.port)).map_err(|e| e.to_string())?;
         upstream
@@ -434,6 +479,32 @@ fn handle_client(mut client: TcpStream, state: Arc<RouterState>) -> Result<(), S
     }
 
     Ok(())
+}
+
+fn reset_metrics() {
+    let metrics = METRICS.get_or_init(RouterMetrics::default);
+    metrics.direct_count.store(0, Ordering::Relaxed);
+    metrics.vpn_count.store(0, Ordering::Relaxed);
+    if let Ok(mut items) = metrics.last_decisions.lock() {
+        items.clear();
+    }
+}
+
+fn record_decision(host: &str, direct: bool) {
+    let metrics = METRICS.get_or_init(RouterMetrics::default);
+    if direct {
+        metrics.direct_count.fetch_add(1, Ordering::Relaxed);
+    } else {
+        metrics.vpn_count.fetch_add(1, Ordering::Relaxed);
+    }
+    let route = if direct { "DIRECT" } else { "VPN" };
+    log::info!("PAC alpha route: {host} -> {route}");
+    if let Ok(mut items) = metrics.last_decisions.lock() {
+        items.push(format!("{host} -> {route}"));
+        if items.len() > 8 {
+            items.remove(0);
+        }
+    }
 }
 
 fn read_http_head(stream: &mut TcpStream) -> Result<Vec<u8>, String> {
