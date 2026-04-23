@@ -86,30 +86,54 @@ pub fn install(subnets: &[String]) -> Result<(), String> {
     };
 
     save_snapshot_once(&settings)?;
-    start_router(upstream.clone(), subnets)?;
+    install_router_pac(upstream, subnets)
+}
 
-    let pac = generate_pac(&upstream);
-    let pac_path = pac_path();
-    std::fs::create_dir_all(pac_path.parent().unwrap()).map_err(|e| e.to_string())?;
-    std::fs::write(&pac_path, pac).map_err(|e| e.to_string())?;
+pub fn sync(subnets: &[String]) -> Result<(), String> {
+    let settings = read_proxy_settings()?;
+    let pac_url = file_url(&pac_path());
 
-    let hkcu = RegKey::predef(HKEY_CURRENT_USER);
-    let key = hkcu
-        .open_subkey_with_flags(INTERNET_SETTINGS, winreg::enums::KEY_WRITE)
-        .map_err(|e| e.to_string())?;
-    key.set_value("ProxyEnable", &0u32)
-        .map_err(|e| e.to_string())?;
-    let _: Result<(), _> = key.delete_value("ProxyServer");
-    key.set_value("AutoConfigURL", &file_url(&pac_path))
-        .map_err(|e| e.to_string())?;
+    if settings.proxy_enable != 0 {
+        let Some(upstream) = proxy_for_router(settings.proxy_server.as_deref()) else {
+            log::info!("PAC sync skipped: enabled system proxy is not static");
+            return Ok(());
+        };
 
-    refresh_wininet();
-    log::info!(
-        "PAC installed for RuBypass router, upstream={}:{}",
-        upstream.host,
-        upstream.port
-    );
+        save_snapshot_replace(&settings)?;
+        install_router_pac(upstream, subnets)?;
+        log::info!("PAC synced after Windows proxy change");
+        return Ok(());
+    }
+
+    if settings.auto_config_url.as_deref() != Some(pac_url.as_str()) {
+        log::info!("PAC sync skipped: RuBypass PAC is not active");
+        return Ok(());
+    }
+
+    let Some(snapshot) = read_snapshot()? else {
+        log::info!("PAC sync skipped: no proxy snapshot exists");
+        return Ok(());
+    };
+    let Some(upstream) = proxy_for_router(snapshot.proxy_server.as_deref()) else {
+        log::info!("PAC sync skipped: snapshot has no static proxy");
+        return Ok(());
+    };
+
+    install_router_pac(upstream, subnets)?;
+    log::info!("PAC synced using existing RuBypass snapshot");
     Ok(())
+}
+
+pub fn proxy_signature() -> String {
+    match read_proxy_settings() {
+        Ok(settings) => format!(
+            "enabled={};server={};pac={}",
+            settings.proxy_enable,
+            settings.proxy_server.unwrap_or_default(),
+            settings.auto_config_url.unwrap_or_default()
+        ),
+        Err(e) => format!("error={e}"),
+    }
 }
 
 pub fn restore() -> Result<(), String> {
@@ -120,8 +144,9 @@ pub fn restore() -> Result<(), String> {
         return Ok(());
     }
 
-    let content = std::fs::read_to_string(&path).map_err(|e| e.to_string())?;
-    let snapshot: ProxySnapshot = serde_json::from_str(&content).map_err(|e| e.to_string())?;
+    let Some(snapshot) = read_snapshot()? else {
+        return Ok(());
+    };
 
     let hkcu = RegKey::predef(HKEY_CURRENT_USER);
     let key = hkcu
@@ -179,6 +204,11 @@ fn save_snapshot_once(settings: &ProxySettings) -> Result<(), String> {
         return Ok(());
     }
 
+    save_snapshot_replace(settings)
+}
+
+fn save_snapshot_replace(settings: &ProxySettings) -> Result<(), String> {
+    let path = snapshot_path();
     let snapshot = ProxySnapshot {
         proxy_enable: Some(settings.proxy_enable),
         proxy_server: settings.proxy_server.clone(),
@@ -187,6 +217,16 @@ fn save_snapshot_once(settings: &ProxySettings) -> Result<(), String> {
     std::fs::create_dir_all(path.parent().unwrap()).map_err(|e| e.to_string())?;
     let json = serde_json::to_string_pretty(&snapshot).map_err(|e| e.to_string())?;
     std::fs::write(path, json).map_err(|e| e.to_string())
+}
+
+fn read_snapshot() -> Result<Option<ProxySnapshot>, String> {
+    let path = snapshot_path();
+    if !path.exists() {
+        return Ok(None);
+    }
+    let content = std::fs::read_to_string(path).map_err(|e| e.to_string())?;
+    let snapshot = serde_json::from_str(&content).map_err(|e| e.to_string())?;
+    Ok(Some(snapshot))
 }
 
 fn proxy_for_router(proxy_server: Option<&str>) -> Option<UpstreamProxy> {
@@ -222,13 +262,17 @@ fn normalize_proxy(value: &str, socks: bool) -> Option<UpstreamProxy> {
     }
     let (host, port) = value.rsplit_once(':')?;
     let port = port.parse().ok()?;
+    let host = host.trim_matches(['[', ']']).to_string();
+    if host == ROUTER_HOST && port == ROUTER_PORT {
+        return None;
+    }
     Some(UpstreamProxy {
         kind: if socks {
             ProxyKind::Socks5
         } else {
             ProxyKind::Http
         },
-        host: host.trim_matches(['[', ']']).to_string(),
+        host,
         port,
     })
 }
@@ -241,6 +285,33 @@ fn generate_pac(upstream: &UpstreamProxy) -> String {
 }}
 "#
     )
+}
+
+fn install_router_pac(upstream: UpstreamProxy, subnets: &[String]) -> Result<(), String> {
+    start_router(upstream.clone(), subnets)?;
+
+    let pac = generate_pac(&upstream);
+    let pac_path = pac_path();
+    std::fs::create_dir_all(pac_path.parent().unwrap()).map_err(|e| e.to_string())?;
+    std::fs::write(&pac_path, pac).map_err(|e| e.to_string())?;
+
+    let hkcu = RegKey::predef(HKEY_CURRENT_USER);
+    let key = hkcu
+        .open_subkey_with_flags(INTERNET_SETTINGS, winreg::enums::KEY_WRITE)
+        .map_err(|e| e.to_string())?;
+    key.set_value("ProxyEnable", &0u32)
+        .map_err(|e| e.to_string())?;
+    let _: Result<(), _> = key.delete_value("ProxyServer");
+    key.set_value("AutoConfigURL", &file_url(&pac_path))
+        .map_err(|e| e.to_string())?;
+
+    refresh_wininet();
+    log::info!(
+        "PAC installed for RuBypass router, upstream={}:{}",
+        upstream.host,
+        upstream.port
+    );
+    Ok(())
 }
 
 fn start_router(upstream: UpstreamProxy, subnets: &[String]) -> Result<(), String> {

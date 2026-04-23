@@ -271,6 +271,21 @@ pub fn reapply_bypass_inner(
     Ok(())
 }
 
+#[cfg(target_os = "windows")]
+pub fn sync_windows_proxy_inner(app: &AppHandle, state: &State<AppState>) -> Result<(), String> {
+    start_spinner(app.clone());
+
+    let subnets = {
+        let mut inner = state.0.lock().unwrap();
+        load_subnets_cached(&mut inner)?
+    };
+
+    let result = crate::pac::sync(&subnets);
+    stop_spinner();
+    set_tray_icon(app, TrayState::Active);
+    result
+}
+
 // ── tray icon ────────────────────────────────────────────────────────────────
 
 pub enum TrayState {
