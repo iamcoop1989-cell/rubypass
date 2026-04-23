@@ -3,7 +3,7 @@
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeSet;
 use std::io::{Read, Write};
-use std::net::{Ipv4Addr, SocketAddr, TcpListener, TcpStream, ToSocketAddrs};
+use std::net::{Ipv4Addr, TcpListener, TcpStream};
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, OnceLock};
@@ -479,23 +479,9 @@ fn should_direct(host: &str, state: &RouterState) -> bool {
         return true;
     }
 
-    if let Ok(ip) = host.parse::<Ipv4Addr>() {
-        return cidr_contains_any(u32::from(ip), &state.cidrs);
-    }
-
-    resolve_ipv4(&host)
+    host.parse::<Ipv4Addr>()
         .map(|ip| cidr_contains_any(u32::from(ip), &state.cidrs))
         .unwrap_or(false)
-}
-
-fn resolve_ipv4(host: &str) -> Option<Ipv4Addr> {
-    (host, 0)
-        .to_socket_addrs()
-        .ok()?
-        .find_map(|addr| match addr {
-            SocketAddr::V4(v4) => Some(*v4.ip()),
-            SocketAddr::V6(_) => None,
-        })
 }
 
 fn cidr_contains_any(ip: u32, cidrs: &[Cidr]) -> bool {
