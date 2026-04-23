@@ -625,9 +625,13 @@ fn should_direct(host: &str, state: &RouterState) -> bool {
         return true;
     }
 
-    host.parse::<Ipv4Addr>()
-        .map(|ip| cidr_contains_any(u32::from(ip), &state.cidrs))
-        .unwrap_or(false)
+    // Alpha mode is intentionally conservative: browsers and embedded webviews
+    // can proxy HTTPS requests using literal IP authorities, and broad IP-based
+    // DIRECT matching made too much non-RU traffic bypass the VPN. Keep the
+    // subnet set loaded for future session-aware routing, but for now route
+    // only explicit RU hostnames directly.
+    let _ = state;
+    false
 }
 
 fn cidr_contains_any(ip: u32, cidrs: &[Cidr]) -> bool {
