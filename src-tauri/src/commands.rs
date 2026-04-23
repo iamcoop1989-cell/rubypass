@@ -205,8 +205,11 @@ pub fn enable_bypass_inner(app: &AppHandle, state: &State<AppState>) -> Result<(
     }
 
     #[cfg(target_os = "windows")]
-    if let Err(e) = crate::pac::install(&subnets) {
-        log::warn!("PAC install failed: {e}");
+    {
+        // Hotfix: the Windows PAC/proxy-router layer is disabled until it is
+        // validated against real VPN clients. Keep route-based bypass active
+        // and keep restore() on disable/exit to clean up older test builds.
+        log::info!("Windows PAC/proxy-router layer is disabled by hotfix");
     }
 
     let mut inner = state.0.lock().unwrap();
@@ -269,21 +272,6 @@ pub fn reapply_bypass_inner(
     stop_spinner();
     set_tray_icon(app, TrayState::Active);
     Ok(())
-}
-
-#[cfg(target_os = "windows")]
-pub fn sync_windows_proxy_inner(app: &AppHandle, state: &State<AppState>) -> Result<(), String> {
-    start_spinner(app.clone());
-
-    let subnets = {
-        let mut inner = state.0.lock().unwrap();
-        load_subnets_cached(&mut inner)?
-    };
-
-    let result = crate::pac::sync(&subnets);
-    stop_spinner();
-    set_tray_icon(app, TrayState::Active);
-    result
 }
 
 // ── tray icon ────────────────────────────────────────────────────────────────
