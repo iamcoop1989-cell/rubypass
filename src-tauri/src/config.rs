@@ -13,6 +13,8 @@ pub struct Config {
     pub gateway_override: Option<String>,
     #[serde(default)]
     pub active_gateway: Option<String>,
+    #[serde(default)]
+    pub active_routes: Vec<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -34,6 +36,7 @@ impl Default for Config {
             last_updated: None,
             gateway_override: None,
             active_gateway: None,
+            active_routes: Vec::new(),
         }
     }
 }
