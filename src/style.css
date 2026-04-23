@@ -26,6 +26,13 @@ body::-webkit-scrollbar-thumb { background: #2a2a3e; border-radius: 2px; }
 .header-left { display: flex; align-items: center; gap: 8px; }
 .header-left .icon { font-size: 18px; }
 .header-left h1 { font-size: 14px; font-weight: 600; }
+.app-version {
+  color: #64748b;
+  font-size: 11px;
+  font-weight: 600;
+  line-height: 1;
+  padding-top: 1px;
+}
 
 .status-section {
   padding: 18px 16px;

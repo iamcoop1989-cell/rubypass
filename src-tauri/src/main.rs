@@ -39,6 +39,7 @@ fn main() {
         .invoke_handler(tauri::generate_handler![
             commands::get_status,
             commands::get_config,
+            commands::get_app_version,
             commands::toggle_bypass,
             commands::update_subnets,
             commands::set_autostart,

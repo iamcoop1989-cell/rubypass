@@ -5,6 +5,15 @@ const { listen } = window.__TAURI__.event;
 let autostartEnabled = false;
 let proxyAlphaEnabled = false;
 
+async function renderAppVersion() {
+  try {
+    const version = await invoke('get_app_version');
+    document.getElementById('app-version').textContent = 'v' + version;
+  } catch (e) {
+    document.getElementById('app-version').textContent = 'v—';
+  }
+}
+
 async function refresh() {
   try {
     const [status, config] = await Promise.all([
@@ -203,4 +212,5 @@ listen('network-changed', () => {
 setInterval(refresh, 5000);
 
 // Initial load
+renderAppVersion();
 refresh();
