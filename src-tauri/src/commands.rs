@@ -47,6 +47,11 @@ pub fn get_app_version() -> &'static str {
 }
 
 #[tauri::command]
+pub fn get_target_os() -> &'static str {
+    std::env::consts::OS
+}
+
+#[tauri::command]
 pub async fn toggle_bypass(app: AppHandle, state: State<'_, AppState>) -> Result<(), String> {
     let enabled = state.0.lock().unwrap().config.bypass_enabled;
     let app2 = app.clone();

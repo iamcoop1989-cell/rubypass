@@ -5,6 +5,16 @@ const { listen } = window.__TAURI__.event;
 let autostartEnabled = false;
 let proxyAlphaEnabled = false;
 
+async function renderPlatformSections() {
+  try {
+    const targetOs = await invoke('get_target_os');
+    const proxyRow = document.getElementById('proxy-alpha-row');
+    proxyRow.style.display = targetOs === 'windows' ? '' : 'none';
+  } catch (e) {
+    document.getElementById('proxy-alpha-row').style.display = '';
+  }
+}
+
 async function renderAppVersion() {
   try {
     const version = await invoke('get_app_version');
@@ -212,5 +222,6 @@ listen('network-changed', () => {
 setInterval(refresh, 5000);
 
 // Initial load
+renderPlatformSections();
 renderAppVersion();
 refresh();

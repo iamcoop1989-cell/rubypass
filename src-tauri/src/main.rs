@@ -40,6 +40,7 @@ fn main() {
             commands::get_status,
             commands::get_config,
             commands::get_app_version,
+            commands::get_target_os,
             commands::toggle_bypass,
             commands::update_subnets,
             commands::set_autostart,
