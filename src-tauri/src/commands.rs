@@ -108,7 +108,7 @@ pub fn set_autostart(enabled: bool, app: AppHandle, state: State<AppState>) -> R
         const CREATE_NO_WINDOW: u32 = 0x08000000;
         if enabled {
             let exe = std::env::current_exe().map_err(|e| e.to_string())?;
-            let exe_path = exe.to_string_lossy().to_string();
+            let exe_path = format!("\"{}\"", exe.to_string_lossy());
             let status = std::process::Command::new("schtasks")
                 .args([
                     "/create", "/tn", "RuBypass",
